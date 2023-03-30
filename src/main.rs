@@ -51,39 +51,21 @@ fn main() -> Result<()> {
     // ----------------------------------------------
     let (w, h) = (128, 128);
 
-    let img1 = ImageReader::open("A.png")?.decode()?.into_rgb8();
+    let img1 = ImageReader::open("bitmap1.png")?.decode()?.into_rgb8();
     let img1 = resize(&img1, w, h, FilterType::CatmullRom);
 
-    let img2 = ImageReader::open("B.png")?.decode()?.into_rgb8();
+    let img2 = ImageReader::open("bitmap2.png")?.decode()?.into_rgb8();
     let img2 = resize(&img2, w, h, FilterType::CatmullRom);
 
-    let mapping = iclk(&img1, &img2, TransformationType::Translational, Some(5000))?;
+    let mapping = iclk(&img1, &img2, TransformationType::Translational, Some(250))?;
     // let mapping = Mapping::from_params(&vec![0.0, 0.0]);
     println!("{:?}", &mapping);
 
     {
-        let mut out = ImageBuffer::new(w, h);  //741x500
-        let get_pixel = |x, y| interpolate_bilinear(&img1, x, y).unwrap_or(Rgb([128, 0, 0]));
-        warp(&mut out, mapping.warpfn(), get_pixel);
-        out.save("out1.png")?;
-    }
-    {
-        let mut out = ImageBuffer::new(w, h);  //741x500
-        let get_pixel = |x, y| interpolate_bilinear(&img1, x, y).unwrap_or(Rgb([128, 0, 0]));
-        warp(&mut out, mapping.inverse().warpfn(), get_pixel);
-        out.save("out2.png")?;
-    }
-    {
-        let mut out = ImageBuffer::new(w, h);  //741x500
+        let mut out = ImageBuffer::new(w, h); 
         let get_pixel = |x, y| interpolate_bilinear(&img2, x, y).unwrap_or(Rgb([128, 0, 0]));
         warp(&mut out, mapping.warpfn(), get_pixel);
-        out.save("out3.png")?;
-    }
-    {
-        let mut out = ImageBuffer::new(w, h);  //741x500
-        let get_pixel = |x, y| interpolate_bilinear(&img2, x, y).unwrap_or(Rgb([128, 0, 0]));
-        warp(&mut out, mapping.inverse().warpfn(), get_pixel);
-        out.save("out4.png")?;
+        out.save("out.png")?;
     }
 
     img1.save("img1.png")?;

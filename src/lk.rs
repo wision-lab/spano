@@ -3,7 +3,7 @@ use std::fs;
 use anyhow::{anyhow, Result};
 use conv::{ValueFrom, ValueInto};
 use image::imageops::colorops::grayscale;
-use image::{GenericImageView, Luma, Pixel, Primitive};
+use image::{GenericImageView, Luma, Pixel, Primitive, GrayImage};
 
 use imageproc::{
     definitions::{Clamp, Image},
@@ -26,20 +26,19 @@ use crate::{
 type Subpixel<I> = <<I as GenericImageView>::Pixel as Pixel>::Subpixel;
 
 /// Compute image gradients using Sobel operator
-/// Returned array is 2xHxW, dx then dy.
-pub fn gradients<T>(img: &Image<Luma<T>>) -> Array3<f32>
+/// Returned (dx, dy) pair as HxW arrays.
+pub fn gradients<T>(img: &Image<Luma<T>>) -> (Array2<f32>, Array2<f32>)
 where
     T: Primitive,
     f32: ValueFrom<T>,
 {
-    stack![
-        Axis(0),
-        filter3x3(img, &VERTICAL_SOBEL.map(|v| v as f32)).into_ndarray2(),
+    (
         filter3x3(img, &HORIZONTAL_SOBEL.map(|v| v as f32)).into_ndarray2(),
-    ]
+        filter3x3(img, &VERTICAL_SOBEL.map(|v| v as f32)).into_ndarray2(),
+    )
 }
 
-//              T               I
+/// Estimate the warp that maps `img2` to `img1` using the Inverse Compositional Lucas-Kanade algorithm.
 pub fn iclk<P>(
     im1: &Image<P>,
     im2: &Image<P>,
@@ -53,12 +52,12 @@ where
     f32: ValueFrom<<P as Pixel>::Subpixel> + From<<P as Pixel>::Subpixel>,
 {
     // Initialize values
-    let mut params = vec![0.0, 0.0];
+    let mut params = vec![0.0; kind.num_params()];
     let h = im2.height().min(im1.height());
     let w = im2.width().min(im1.width());
     let points: Vec<(f32, f32)> = (0..h)
         .cartesian_product(0..w)
-        .map(|(x, y)| (x as f32, y as f32))
+        .map(|(y, x)| (x as f32, y as f32))
         .collect();
     let im1_gray = grayscale(im1);
     let im2_gray = grayscale(im2);
@@ -77,60 +76,57 @@ where
     // These can be cached, so we init them before the main loop
     let (steepest_descent_ic, hessian_inv) = match kind {
         TransformationType::Translational => {
-            let steepest_descent_ic = gradients(&im2_gray).permuted_axes([2, 0, 1])
-                .into_shape((kind.num_params(), points.len()))?;
+            let (dx, dy) = gradients(&im2_gray);
+            let steepest_descent_ic = stack![
+                Axis(0),
+                dx.clone().into_shape(points.len())?,
+                dy.clone().into_shape(points.len())?
+            ].permuted_axes([1, 0]);
+            let hessian_inv = 1.0 / (&dx*&dx + &dy*&dy).sum();
 
-            let hessian_inv = {
-                let hessian: f32 = steepest_descent_ic
-                    .axis_iter(Axis(0))
-                    .into_par_iter()
-                    .map(|a| a.dot(&a))
-                    .sum();
-                1.0 / hessian
-            };
             // (Nx2)              f32
             (steepest_descent_ic, hessian_inv)
         }
-        TransformationType::Affine => {
-            let mut steepest_descent_ic = Array2::zeros((points.len(), kind.num_params()));
+        // TransformationType::Affine => {
+        //     let mut steepest_descent_ic = Array2::zeros((points.len(), kind.num_params()));
 
-            let jacobian_p = {
-                let (x, y): (Vec<_>, Vec<_>) = points.iter().cloned().unzip();
-                let ones: Array1<f32> = ArrayBase::ones(points.len());
-                let zeros: Array1<f32> = ArrayBase::zeros(points.len());
-                stack![
-                    Axis(0),
-                    stack![Axis(0), x, zeros, y, zeros, ones, zeros],
-                    stack![Axis(0), zeros, x, zeros, y, zeros, ones]
-                ]
-                .permuted_axes([2, 0, 1])
-            }; // (Nx2x6)
+        //     let jacobian_p = {
+        //         let (x, y): (Vec<_>, Vec<_>) = points.iter().cloned().unzip();
+        //         let ones: Array1<f32> = ArrayBase::ones(points.len());
+        //         let zeros: Array1<f32> = ArrayBase::zeros(points.len());
+        //         stack![
+        //             Axis(0),
+        //             stack![Axis(0), x, zeros, y, zeros, ones, zeros],
+        //             stack![Axis(0), zeros, x, zeros, y, zeros, ones]
+        //         ]
+        //         .permuted_axes([2, 0, 1])  // .permuted_axes([1, 2, 0])!!!!!!!
+        //     }; // (Nx2x6)
 
-            let grad_im2 = gradients(&im2_gray)
-                .into_shape((2, points.len()))?
-                .permuted_axes([1, 0]);
+        //     let grad_im2 = gradients(&im2_gray)
+        //         .into_shape((2, points.len()))?
+        //         .permuted_axes([1, 0]);
 
-            // Perform the batch matrix multiply of grad_im2 @ jacobian_p
-            par_azip!(
-                (
-                    mut v in steepest_descent_ic.axis_iter_mut(Axis(0)),
-                    a in grad_im2.axis_iter(Axis(0)),
-                    b in jacobian_p.axis_iter(Axis(0))
-                )
-                {v.assign(&a.dot(&b))}
-            );
+        //     // Perform the batch matrix multiply of grad_im2 @ jacobian_p
+        //     par_azip!(
+        //         (
+        //             mut v in steepest_descent_ic.axis_iter_mut(Axis(0)),
+        //             a in grad_im2.axis_iter(Axis(0)),
+        //             b in jacobian_p.axis_iter(Axis(0))
+        //         )
+        //         {v.assign(&a.dot(&b))}
+        //     );
 
-            let hessian_inv = {
-                let hessian: f32 = steepest_descent_ic
-                    .axis_iter(Axis(0))
-                    .into_par_iter()
-                    .map(|a| a.dot(&a))
-                    .sum();
-                1.0 / hessian
-            };
-            // (Nx6)              f32
-            (steepest_descent_ic, hessian_inv)
-        }
+        //     let hessian_inv = {
+        //         let hessian: f32 = steepest_descent_ic
+        //             .axis_iter(Axis(0))
+        //             .into_par_iter()
+        //             .map(|a| a.dot(&a))
+        //             .sum();
+        //         1.0 / hessian
+        //     };
+        //     // (Nx6)              f32
+        //     (steepest_descent_ic, hessian_inv)
+        // }
         _ => return Err(anyhow!("Mapping type {:?} not yet supported!", kind)),
     };
 
@@ -165,7 +161,7 @@ where
         // Update the parameters
         params = Mapping::from_matrix(
             mapping.mat.dot(&mapping_dp.mat.inv()?),
-            TransformationType::Affine,
+            kind,
         )
         .get_params();
         history.push(dp.norm());
@@ -179,5 +175,5 @@ where
     let serialized = serde_json::to_string(&history)?;
     fs::write("hist.json", serialized)?;
 
-    Ok(Mapping::from_params(&params))
+    Ok(Mapping::from_params(&params).inverse())
 }

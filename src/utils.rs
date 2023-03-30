@@ -1,7 +1,8 @@
 #[allow(dead_code)]
-pub fn product<'a: 'c, 'b: 'c, 'c, T>(
-    xs: &'a [T],
-    ys: &'b [T],
-) -> impl Iterator<Item = (&'a T, &'b T)> + 'c {
-    xs.iter().flat_map(move |x| std::iter::repeat(x).zip(ys))
+pub fn array2grayimage(frame: Array2<u8>) -> Option<GrayImage> {
+    GrayImage::from_raw(
+        frame.len_of(Axis(1)) as u32,
+        frame.len_of(Axis(0)) as u32,
+        frame.into_raw_vec(),
+    )
 }
