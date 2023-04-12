@@ -11,6 +11,7 @@ pub enum TransformationType {
     Translational,
     Affine,
     Projective,
+    Unknown,
 }
 
 impl TransformationType {
@@ -19,6 +20,7 @@ impl TransformationType {
             TransformationType::Translational => 2,
             TransformationType::Affine => 6,
             TransformationType::Projective => 8,
+            TransformationType::Unknown => 0,
         }
     }
 }
@@ -69,6 +71,15 @@ impl Mapping {
         Self::from_matrix(mat, kind)
     }
 
+    pub fn scale(x: f32, y: f32) -> Self {
+        Self::from_params(&[x, 0.0, 0.0, y, 0.0, 0.0])
+    }
+
+    pub fn shift(x: f32, y: f32) -> Self {
+        Self::from_params(&[x, y])
+    }
+
+    #[inline]
     pub fn warpfn<T>(&self) -> impl Fn(&(T, T)) -> (f32, f32) + '_
     where
         T: AsPrimitive<f32> + Copy + 'static,
@@ -76,6 +87,7 @@ impl Mapping {
         move |&(x, y)| self.warp_point((x, y))
     }
 
+    #[inline]
     pub fn warpfn_centered<T>(&self, dim: (u32, u32)) -> impl Fn(&(T, T)) -> (f32, f32) + '_
     where
         T: AsPrimitive<f32> + Copy + 'static,
@@ -108,6 +120,7 @@ impl Mapping {
         }
     }
 
+    #[inline]
     pub fn warp_points_centered<T>(&self, p: (T, T), h: f32, w: f32) -> (f32, f32)
     where
         T: AsPrimitive<f32> + Copy + 'static,
@@ -118,8 +131,15 @@ impl Mapping {
 
         let x_centered = 2.0 * (x / w) - 1.0;
         let y_centered = 2.0 * (y / h) - 1.0;
+        
+        // let x_centered = (x + 1.0) * w / 2.0;
+        // let y_centered = (y + 1.0) * h / 2.0;
+
         let (xp, yp) = self.warp_point((x_centered, y_centered));
-        ((xp+1.0)*w/2.0, (yp+1.0)*h/2.0)
+
+        ((xp + 1.0) * w / 2.0, (yp + 1.0) * h / 2.0)
+
+        // (2.0 * (xp / w) - 1.0, 2.0 * (yp / h) - 1.0)
     }
 
     pub fn get_params(&self) -> Vec<f32> {
@@ -129,15 +149,34 @@ impl Mapping {
             TransformationType::Affine => vec![p[0] - 1.0, p[3], p[1], p[4] - 1.0, p[2], p[5]],
             TransformationType::Projective => {
                 vec![p[0] - 1.0, p[3], p[1], p[4] - 1.0, p[2], p[5], p[6], p[7]]
-            }
+            },
+            _ => panic!("Transformation cannot be unknown!")
         }
     }
 
     pub fn inverse(&self) -> Mapping {
         Mapping {
-            mat: self.mat.inv().expect("Cannot invert maping"),
+            mat: self.mat.inv().expect("Cannot invert mapping"),
             is_identity: self.is_identity,
             kind: self.kind,
+        }
+    }
+
+    pub fn transform(&self, lhs: Option<Self>, rhs: Option<Self>) -> Self {
+        let (lhs_mat, lhs_id, lhs_kind) = lhs.map_or(
+            (Array2::eye(3), false, TransformationType::Unknown),
+            |m| (m.mat, m.is_identity, m.kind)
+        );
+
+        let (rhs_mat, rhs_id, rhs_kind) = rhs.map_or(
+            (Array2::eye(3), false, TransformationType::Unknown),
+            |m| (m.mat, m.is_identity, m.kind)
+        );
+
+        Mapping {
+            mat: lhs_mat.dot(&self.mat).dot(&rhs_mat).to_owned(),
+            is_identity: lhs_id & self.is_identity & rhs_id,
+            kind: *[lhs_kind, self.kind, rhs_kind].iter().max_by_key(|k| k.num_params()).unwrap()
         }
     }
 }

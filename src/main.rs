@@ -8,11 +8,14 @@ use image::{io::Reader as ImageReader, ImageBuffer, Rgb};
 use warps::warp;
 
 mod blend;
+mod io;
 mod lk;
+mod utils;
 mod warps;
 
 use crate::lk::iclk;
-use crate::warps::{TransformationType, Mapping};
+use crate::utils::animate_warp;
+use crate::warps::TransformationType;
 
 #[allow(dead_code)]
 fn print_type_of<T>(_: &T) {
@@ -51,24 +54,77 @@ fn main() -> Result<()> {
     // ----------------------------------------------
     let (w, h) = (128, 128);
 
-    let img1 = ImageReader::open("bitmap1.png")?.decode()?.into_rgb8();
+    let img1 = ImageReader::open("A.png")?.decode()?.into_rgb8();
     let img1 = resize(&img1, w, h, FilterType::CatmullRom);
 
-    let img2 = ImageReader::open("bitmap2.png")?.decode()?.into_rgb8();
+    let img2 = ImageReader::open("B.png")?.decode()?.into_rgb8();
     let img2 = resize(&img2, w, h, FilterType::CatmullRom);
 
-    let mapping = iclk(&img1, &img2, TransformationType::Translational, Some(250))?;
+    let mapping = iclk(&img1, &img2, TransformationType::Affine, Some(2500))?;
     // let mapping = Mapping::from_params(&vec![0.0, 0.0]);
     println!("{:?}", &mapping);
 
-    {
-        let mut out = ImageBuffer::new(w, h); 
-        let get_pixel = |x, y| interpolate_bilinear(&img2, x, y).unwrap_or(Rgb([128, 0, 0]));
-        warp(&mut out, mapping.warpfn(), get_pixel);
-        out.save("out.png")?;
-    }
+    let mut out = ImageBuffer::new(w, h);
+    let get_pixel = |x, y| interpolate_bilinear(&img2, x, y).unwrap_or(Rgb([128, 0, 0]));
+    warp(&mut out, mapping.warpfn(), get_pixel);
+    // warp(
+    //     &mut out,
+    //     mapping.warpfn_centered(img2.dimensions()),
+    //     get_pixel,
+    // );
+    out.save("out.png")?;
 
     img1.save("img1.png")?;
     img2.save("img2.png")?;
+
+    animate_warp(
+        "B.png",
+        "params_hist.json",
+        "tmp/",
+        Some((w, h)),
+        Some(5),
+        Some(50),
+    )?;
+
+    // ----------------------------------------------
+
+    // use std::fs::File;
+    // use std::io::BufReader;
+    // use std::path::Path;
+
+    // let (w, h) = (512, 512);
+
+    // let img2 = ImageReader::open("2-c.png")?.decode()?.into_rgb8();
+    // // let img2 = resize(&img2, w, h, FilterType::CatmullRom);
+
+    // let file = File::open("params_hist.json")?;
+    // let reader = BufReader::new(file);
+    // let params_history: Vec<Vec<f32>> = serde_json::from_reader(reader)?;
+    // let img_dir = "tmp/".to_string();
+
+    // for (i, params) in params_history.iter().step_by(1000).enumerate() {
+    //     let mut out = ImageBuffer::new(w, h);
+    //     let get_pixel = |x, y| interpolate_bilinear(&img2, x, y).unwrap_or(Rgb([128, 128, 128]));
+    //     // warp(&mut out, mapping.warpfn(), get_pixel);
+    //     warp(&mut out, Mapping::from_params(params).warpfn_centered(img2.dimensions()), get_pixel);
+
+    //     let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
+    //         out
+    //             .save(&path)
+    //             .unwrap_or_else(|_| panic!("Could not save frame at {}!", &path.display()));
+
+    // }
+
+    // ensure_ffmpeg(true);
+    // make_video(
+    //     Path::new(&img_dir).join("frame%06d.png").to_str().unwrap(),
+    //     "out.mp4",
+    //     25,
+    //     300,
+    //     None,
+    // );
+
+    // ----------------------------------------------
+
     Ok(())
 }

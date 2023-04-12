@@ -26,7 +26,9 @@ where
 
     if right_weight.abs() < 1e-8 && bottom_weight.abs() < 1e-8 {
         // If it's integer, return that pixel
-        image.get_pixel_checked(x as u32, y as u32).map(|p| p.to_owned())
+        image
+            .get_pixel_checked(x as u32, y as u32)
+            .map(|p| p.to_owned())
     } else if left < 0f32 || right >= width as f32 || top < 0f32 || bottom >= height as f32 {
         // None if out of bound
         None
