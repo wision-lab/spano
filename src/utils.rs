@@ -1,12 +1,12 @@
-use std::fs::{create_dir_all, remove_dir_all};
 use std::fs::File;
+use std::fs::{create_dir_all, remove_dir_all};
 use std::io::BufReader;
 use std::path::Path;
 
 use anyhow::Result;
+use image::imageops::{resize, FilterType};
 use image::{io::Reader as ImageReader, GrayImage, ImageBuffer, Rgb};
 use ndarray::{Array2, Axis};
-use image::imageops::{resize, FilterType};
 
 use crate::blend::interpolate_bilinear;
 use crate::io::{ensure_ffmpeg, make_video};
@@ -59,10 +59,10 @@ pub fn animate_warp(
         let get_pixel = |x, y| interpolate_bilinear(&img, x, y).unwrap_or(Rgb([128, 128, 128]));
         // warp(
         //     &mut out,
-        //     Mapping::from_params(params).warpfn_centered(img.dimensions()),
+        //     Mapping::from_params(params).inverse().warpfn_centered(img.dimensions()),
         //     get_pixel,
         // );
-        warp(&mut out, Mapping::from_params(params).warpfn(), get_pixel);
+        warp(&mut out, Mapping::from_params(params).inverse().warpfn(), get_pixel);
 
         let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
         out.save(&path)

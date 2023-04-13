@@ -12,7 +12,7 @@ use imageproc::{
 };
 use indicatif::{ProgressIterator, ProgressStyle};
 use itertools::Itertools;
-use ndarray::{par_azip, stack, Array1, Array2, ArrayBase, Axis, Array3, s, NewAxis};
+use ndarray::{par_azip, s, stack, Array1, Array2, ArrayBase, Axis, NewAxis};
 use ndarray_linalg::norm::Norm;
 use ndarray_linalg::solve::Inverse;
 use nshare::ToNdarray2;
@@ -39,6 +39,7 @@ where
 }
 
 /// Estimate the warp that maps `img2` to `img1` using the Inverse Compositional Lucas-Kanade algorithm.
+/// In other words, img2 is the template and img1 is the static image.
 pub fn iclk<P>(
     im1: &Image<P>,
     im2: &Image<P>,
@@ -58,7 +59,7 @@ where
     let points: Vec<(f32, f32)> = (0..h)
         .cartesian_product(0..w)
         // .map(|(y, x)| (
-        //     2.0 * (x as f32 / w as f32) - 1.0, 
+        //     2.0 * (x as f32 / w as f32) - 1.0,
         //     2.0 * (y as f32 / h as f32) - 1.0
         // ))
         .map(|(y, x)| (x as f32, y as f32))
@@ -84,15 +85,20 @@ where
             let (dx, dy) = gradients(&im2_gray);
             let steepest_descent_ic_t = stack![
                 Axis(1),
-                dx.clone().into_shape(points.len())?,
-                dy.clone().into_shape(points.len())?
+                dx.into_shape(points.len())?,
+                dy.into_shape(points.len())?
             ]; // (Nx2)
 
             let hessian_inv = (steepest_descent_ic_t.clone().permuted_axes([1, 0]))
-                .dot(&steepest_descent_ic_t).inv().unwrap();
+                .dot(&steepest_descent_ic_t)
+                .inv()
+                .unwrap();
 
             // (Nx2x1)              (2x2)
-            (steepest_descent_ic_t.slice(s![.., .., NewAxis]).to_owned(), hessian_inv)
+            (
+                steepest_descent_ic_t.slice(s![.., .., NewAxis]).to_owned(),
+                hessian_inv,
+            )
         }
         TransformationType::Affine => {
             let mut steepest_descent_ic_t = Array2::zeros((points.len(), kind.num_params()));
@@ -108,17 +114,13 @@ where
                 ]
                 .permuted_axes([2, 0, 1])
             }; // (Nx2x6)
-            println!("jacobian_p {:?}", jacobian_p.shape());
-            println!("jacobian_p {:?}", jacobian_p.slice(s![500, .., ..]));
 
             let (dx, dy) = gradients(&im2_gray);
-            println!("dx {:?}", dx.shape());
             let grad_im2 = stack![
                 Axis(2),
                 dx.into_shape((points.len(), 1))?,
                 dy.into_shape((points.len(), 1))?
             ]; // (Nx1x2)
-            println!("grad_im2 {:?}", grad_im2.shape());
 
             // Perform the batch matrix multiply of grad_im2 @ jacobian_p
             par_azip!(
@@ -131,15 +133,66 @@ where
             );
 
             let hessian_inv = (steepest_descent_ic_t.clone().permuted_axes([1, 0]))
-                .dot(&steepest_descent_ic_t).inv().unwrap();
-            println!("{hessian_inv:?}");
+                .dot(&steepest_descent_ic_t)
+                .inv()
+                .unwrap();
 
             // (Nx6x1)              (6x6)
-            (steepest_descent_ic_t.slice(s![.., .., NewAxis]).to_owned(), hessian_inv)
+            (
+                steepest_descent_ic_t.slice(s![.., .., NewAxis]).to_owned(),
+                hessian_inv,
+            )
+        }
+        TransformationType::Projective => {
+            let mut steepest_descent_ic_t = Array2::zeros((points.len(), kind.num_params()));
+
+            // dW_dp evaluated at (x, p) and p=0 (identity transform)
+            let jacobian_p = {
+                let (x, y): (Vec<_>, Vec<_>) = points.iter().cloned().unzip();
+                let ones: Array1<f32> = ArrayBase::ones(points.len());
+                let zeros: Array1<f32> = ArrayBase::zeros(points.len());
+                let minus_xx: Vec<f32> = x.iter().map(|i1| -i1 * i1).collect();
+                let minus_yy: Vec<f32> = y.iter().map(|i1| -i1 * i1).collect();
+                let minus_xy: Vec<f32> = x.iter().zip(&y).map(|(i1, i2)| -i1 * i2).collect();
+                stack![
+                    Axis(0),
+                    stack![Axis(0), x, zeros, y, zeros, ones, zeros, minus_xx, minus_xy],
+                    stack![Axis(0), zeros, x, zeros, y, zeros, ones, minus_xy, minus_yy]
+                ]
+                .permuted_axes([2, 0, 1])
+            }; // (Nx2x8)
+
+            let (dx, dy) = gradients(&im2_gray);
+            let grad_im2 = stack![
+                Axis(2),
+                dx.into_shape((points.len(), 1))?,
+                dy.into_shape((points.len(), 1))?
+            ]; // (Nx1x2)
+
+            // Perform the batch matrix multiply of grad_im2 @ jacobian_p
+            par_azip!(
+                (
+                    mut v in steepest_descent_ic_t.axis_iter_mut(Axis(0)),
+                    a in grad_im2.axis_iter(Axis(0)),
+                    b in jacobian_p.axis_iter(Axis(0))
+                )
+                {v.assign(&a.dot(&b).into_shape(kind.num_params()).unwrap())}
+            );
+
+            let hessian_inv = (steepest_descent_ic_t.clone().permuted_axes([1, 0]))
+                .dot(&steepest_descent_ic_t)
+                .inv()
+                .unwrap();
+            println!("{hessian_inv:?}");
+
+            // (Nx8x1)              (8x8)
+            (
+                steepest_descent_ic_t.slice(s![.., .., NewAxis]).to_owned(),
+                hessian_inv,
+            )
         }
         _ => return Err(anyhow!("Mapping type {:?} not yet supported!", kind)),
     };
-
 
     // Main optimization loop
     for _ in (0..max_iters.unwrap_or(100))
@@ -157,8 +210,7 @@ where
         let warped_im1gray_pixels: Vec<Option<f32>> = warped_points.map(sampler).collect();
 
         // Calculate parameter update dp
-        let dp: Array2<f32> = hessian_inv
-            .dot(
+        let dp: Array2<f32> = hessian_inv.dot(
             &(
                 steepest_descent_ic_t.axis_iter(Axis(0)),
                 &warped_im1gray_pixels,
@@ -169,7 +221,10 @@ where
                 // Drop them if the warped value from is None (i.e: out-of-bounds)
                 .filter_map(|(sd, p1_opt, p2)| p1_opt.map(|p1| sd.to_owned() * (p1 - p2)))
                 // Sum them together, here we use reduce with a base value of zero
-                .reduce(|| Array2::<f32>::zeros((kind.num_params(), 1)), |a, b| a + b)
+                .reduce(
+                    || Array2::<f32>::zeros((kind.num_params(), 1)),
+                    |a, b| a + b,
+                ),
         );
         let mapping_dp = Mapping::from_params(&dp.clone().into_raw_vec());
 

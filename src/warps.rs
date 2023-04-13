@@ -131,7 +131,7 @@ impl Mapping {
 
         let x_centered = 2.0 * (x / w) - 1.0;
         let y_centered = 2.0 * (y / h) - 1.0;
-        
+
         // let x_centered = (x + 1.0) * w / 2.0;
         // let y_centered = (y + 1.0) * h / 2.0;
 
@@ -149,8 +149,8 @@ impl Mapping {
             TransformationType::Affine => vec![p[0] - 1.0, p[3], p[1], p[4] - 1.0, p[2], p[5]],
             TransformationType::Projective => {
                 vec![p[0] - 1.0, p[3], p[1], p[4] - 1.0, p[2], p[5], p[6], p[7]]
-            },
-            _ => panic!("Transformation cannot be unknown!")
+            }
+            _ => panic!("Transformation cannot be unknown!"),
         }
     }
 
@@ -163,20 +163,23 @@ impl Mapping {
     }
 
     pub fn transform(&self, lhs: Option<Self>, rhs: Option<Self>) -> Self {
-        let (lhs_mat, lhs_id, lhs_kind) = lhs.map_or(
-            (Array2::eye(3), false, TransformationType::Unknown),
-            |m| (m.mat, m.is_identity, m.kind)
-        );
+        let (lhs_mat, lhs_id, lhs_kind) = lhs
+            .map_or((Array2::eye(3), false, TransformationType::Unknown), |m| {
+                (m.mat, m.is_identity, m.kind)
+            });
 
-        let (rhs_mat, rhs_id, rhs_kind) = rhs.map_or(
-            (Array2::eye(3), false, TransformationType::Unknown),
-            |m| (m.mat, m.is_identity, m.kind)
-        );
+        let (rhs_mat, rhs_id, rhs_kind) = rhs
+            .map_or((Array2::eye(3), false, TransformationType::Unknown), |m| {
+                (m.mat, m.is_identity, m.kind)
+            });
 
         Mapping {
             mat: lhs_mat.dot(&self.mat).dot(&rhs_mat).to_owned(),
             is_identity: lhs_id & self.is_identity & rhs_id,
-            kind: *[lhs_kind, self.kind, rhs_kind].iter().max_by_key(|k| k.num_params()).unwrap()
+            kind: *[lhs_kind, self.kind, rhs_kind]
+                .iter()
+                .max_by_key(|k| k.num_params())
+                .unwrap(),
         }
     }
 }

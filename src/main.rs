@@ -54,13 +54,13 @@ fn main() -> Result<()> {
     // ----------------------------------------------
     let (w, h) = (128, 128);
 
-    let img1 = ImageReader::open("A.png")?.decode()?.into_rgb8();
+    let img1 = ImageReader::open("2-c.png")?.decode()?.into_rgb8();
     let img1 = resize(&img1, w, h, FilterType::CatmullRom);
 
-    let img2 = ImageReader::open("B.png")?.decode()?.into_rgb8();
+    let img2 = ImageReader::open("1-c.png")?.decode()?.into_rgb8();
     let img2 = resize(&img2, w, h, FilterType::CatmullRom);
 
-    let mapping = iclk(&img1, &img2, TransformationType::Affine, Some(2500))?;
+    let mapping = iclk(&img1, &img2, TransformationType::Projective, Some(500))?;
     // let mapping = Mapping::from_params(&vec![0.0, 0.0]);
     println!("{:?}", &mapping);
 
@@ -78,12 +78,12 @@ fn main() -> Result<()> {
     img2.save("img2.png")?;
 
     animate_warp(
-        "B.png",
+        "1-c.png",
         "params_hist.json",
         "tmp/",
         Some((w, h)),
-        Some(5),
-        Some(50),
+        Some(10),
+        Some(10),
     )?;
 
     // ----------------------------------------------
