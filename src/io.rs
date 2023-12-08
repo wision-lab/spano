@@ -1,11 +1,11 @@
-pub use anyhow::{anyhow, Result};
-
-pub use ndarray::prelude::*;
-pub use std::path::Path;
-
-use ffmpeg_sidecar::command::{ffmpeg_is_installed, FfmpegCommand};
 use ffmpeg_sidecar::paths::sidecar_dir;
+use ffmpeg_sidecar::{
+    command::{ffmpeg_is_installed, FfmpegCommand},
+    event::{FfmpegEvent, FfmpegProgress},
+};
 use indicatif::{ProgressBar, ProgressStyle};
+
+const DEBUG_FFMPEG: bool = false;
 
 pub fn ensure_ffmpeg(verbose: bool) {
     if !ffmpeg_is_installed() {
@@ -36,11 +36,20 @@ pub fn make_video(
         "-framerate {fps} -f image2 -i {pattern} -y -vcodec libx264 -crf 22 -pix_fmt yuv420p {outfile}"
     );
 
-    let mut ffmpeg_runner = FfmpegCommand::new().args(cmd.split(' ')).spawn().unwrap();
-    ffmpeg_runner
-        .iter()
-        .unwrap()
-        .filter_progress()
-        .for_each(|progress| pbar.set_position(progress.frame as u64));
+    let mut ffmpeg_runner = FfmpegCommand::new()
+        .args(cmd.split(' '))
+        // .print_command()
+        .spawn()
+        .unwrap();
+
+    ffmpeg_runner.iter().unwrap().for_each(|e| match e {
+        FfmpegEvent::Progress(FfmpegProgress { frame, .. }) => pbar.set_position(frame as u64),
+        FfmpegEvent::Log(_level, msg) => {
+            if DEBUG_FFMPEG {
+                println!("[ffmpeg] {msg}")
+            }
+        }
+        _ => {}
+    });
     pbar.finish_and_clear();
 }

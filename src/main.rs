@@ -1,23 +1,24 @@
 #![allow(dead_code)] // Todo: Remove
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use blend::interpolate_bilinear;
 use image::imageops::{resize, FilterType};
 use image::{io::Reader as ImageReader, ImageBuffer, Rgb};
-
-use warps::warp;
+use std::fs;
 
 mod blend;
 mod io;
 mod lk;
 mod utils;
 mod warps;
+mod cli;
 
-use crate::lk::iclk;
-use crate::utils::animate_warp;
-use crate::warps::TransformationType;
+use crate::lk::{iclk, hierarchical_iclk};
+use crate::warps::{warp, Mapping};
+use crate::utils::{animate_warp, animate_hierarchical_warp};
+use crate::cli::{Args, Parser};
 
-#[allow(dead_code)]
+
 fn print_type_of<T>(_: &T) {
     println!("{}", std::any::type_name::<T>())
 }
@@ -52,39 +53,88 @@ fn main() -> Result<()> {
     // out.save("pano.png")?;
 
     // ----------------------------------------------
-    let (w, h) = (128, 128);
 
-    let img1 = ImageReader::open("2-c.png")?.decode()?.into_rgb8();
+    // use splines::impl_Interpolate;
+    // use splines::{Interpolation, Key, Spline};
+    // use nalgebra::SVector;
+    // impl_Interpolate!(f32, SVector<f32, 8>, std::f32::consts::PI);
+
+    // ----------------------------------------------
+    // Parse arguments defined in struct
+    let args = Args::parse();
+    let [img1_path, img2_path, ..] = &args.input[..] else {
+        // Note: This should never occur as clap validates the args... 
+        return Err(anyhow!(
+            "Exactly two inputs are required for --input."
+        ));
+    };
+
+    // Load images and resize if needed
+    let img1 = ImageReader::open(img1_path)?
+        .decode()?
+        .into_rgb8();
+    let img2 = ImageReader::open(img2_path)?
+        .decode()?
+        .into_rgb8();
+    let (w, h) = img1.dimensions();
+    let (w_, h_) = img2.dimensions();
+
+    if (h != h_) || (w != w_) {
+        return Err(anyhow!(
+            "Inputs need to be of same size."
+        ));
+    }
+    let w = (w as f32 / args.downscale) as u32; 
+    let h = (h as f32 / args.downscale) as u32; 
     let img1 = resize(&img1, w, h, FilterType::CatmullRom);
-
-    let img2 = ImageReader::open("1-c.png")?.decode()?.into_rgb8();
     let img2 = resize(&img2, w, h, FilterType::CatmullRom);
 
-    let mapping = iclk(&img1, &img2, TransformationType::Projective, Some(500))?;
-    // let mapping = Mapping::from_params(&vec![0.0, 0.0]);
-    println!("{:?}", &mapping);
+    // Register images
+    let (mapping, params_history) = hierarchical_iclk(
+        &img1,
+        &img2,
+        Mapping::from_params(&[0.0; 8]),
+        Some(args.iterations),
+        (25, 25),
+        8,
+        Some(0.1),
+    )?;
+
+    // let (mapping, params_history, dp_history) =
+    //     iclk(&img1, &img2, Mapping::from_params(&[0.0; 8]), Some(args.iterations))?;
+
+    // Save optimization results and history
+    let serialized = serde_json::to_string_pretty(&params_history)?;
+    fs::write("params_hist.json", serialized)?;
+
+    println!("{:?}", &mapping.mat);
 
     let mut out = ImageBuffer::new(w, h);
     let get_pixel = |x, y| interpolate_bilinear(&img2, x, y).unwrap_or(Rgb([128, 0, 0]));
     warp(&mut out, mapping.warpfn(), get_pixel);
-    // warp(
-    //     &mut out,
-    //     mapping.warpfn_centered(img2.dimensions()),
-    //     get_pixel,
-    // );
+    
     out.save("out.png")?;
-
     img1.save("img1.png")?;
     img2.save("img2.png")?;
 
-    animate_warp(
-        "1-c.png",
+    animate_hierarchical_warp(
+        img2_path,
         "params_hist.json",
         "tmp/",
-        Some((w, h)),
-        Some(10),
-        Some(10),
+        Some(args.viz_fps), // FPS
+        Some(args.viz_step), // Step
+        args.output.as_deref()
     )?;
+
+    // animate_warp(
+    //     img2_path,
+    //     "params_hist.json",
+    //     "tmp/",
+    //     args.downscale,
+    //     Some(args.viz_fps), // FPS
+    //     Some(args.viz_step), // Step
+    //     args.output.as_deref()
+    // )?;
 
     // ----------------------------------------------
 

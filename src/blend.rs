@@ -73,7 +73,6 @@ where
 }
 
 /// Akin to the distance transform used by opencv or bwdist in MATLB but much more general.
-#[allow(dead_code)]
 pub fn polygon_sdf_vec(vertices: Array2<f32>) -> impl Fn(f32, f32) -> f32 {
     // Adapted from: https://www.shadertoy.com/view/wdBXRW
 

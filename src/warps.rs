@@ -25,12 +25,13 @@ impl TransformationType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Mapping {
     pub mat: Array2<f32>,
     pub is_identity: bool,
     pub kind: TransformationType,
 }
+
 
 impl Mapping {
     /// Return the mapping that trasforms a point using a 3x3 matrix.
@@ -72,7 +73,7 @@ impl Mapping {
     }
 
     pub fn scale(x: f32, y: f32) -> Self {
-        Self::from_params(&[x, 0.0, 0.0, y, 0.0, 0.0])
+        Self::from_params(&[x - 1.0, 0.0, 0.0, y - 1.0, 0.0, 0.0])
     }
 
     pub fn shift(x: f32, y: f32) -> Self {
@@ -184,7 +185,11 @@ impl Mapping {
     }
 }
 
+// pub fn interpolate_mappings(ts: Vec<f32>, maps: Vec<Mapping>) {
+// }
+
 /// Warp an image into a pre-allocated buffer
+/// TODO: Can this be made SIMD?
 /// Heavily modeled from
 ///     https://docs.rs/imageproc/0.23.0/src/imageproc/geometric_transformations.rs.html#496
 pub fn warp<P, Fi, Fc>(out: &mut Image<P>, mapping: Fc, get_pixel: Fi)
