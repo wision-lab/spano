@@ -11,7 +11,7 @@ use imageproc::{
     gradients::{HORIZONTAL_SOBEL, VERTICAL_SOBEL},
 };
 
-use indicatif::{ProgressIterator, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle};
 use itertools::{izip, Itertools};
 use ndarray::{par_azip, s, stack, Array1, Array2, ArrayBase, Axis, NewAxis};
 use ndarray_linalg::solve::Inverse;
@@ -57,7 +57,15 @@ where
     let im2_gray = grayscale(im2);
     let (dx, dy) = gradients(&im2_gray);
 
-    iclk_grayscale(&im1_gray, &im2_gray, (dx, dy), init_mapping, max_iters, stop_early)
+    iclk_grayscale(
+        &im1_gray,
+        &im2_gray,
+        (dx, dy),
+        init_mapping,
+        max_iters,
+        stop_early,
+        Some(""),
+    )
 }
 
 /// Main iclk routine, only works for grayscale images
@@ -68,6 +76,7 @@ pub fn iclk_grayscale<T>(
     init_mapping: Mapping,
     max_iters: Option<i32>,
     stop_early: Option<f32>,
+    message: Option<&str>,
 ) -> Result<(Mapping, Vec<Vec<f32>>)>
 where
     T: Primitive + Clamp<f32> + Send + Sync,
@@ -211,13 +220,21 @@ where
         }
     };
 
+    // Conditionally setup a pbar
+    let pbar = if let Some(msg) = message {
+        ProgressBar::new(max_iters.unwrap_or(250) as u64)
+            .with_style(ProgressStyle::with_template(
+                "{msg} ETA:{eta}, [{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>6}/{len:6}",
+            )?)
+            .with_message(msg.to_owned())
+    } else {
+        ProgressBar::hidden()
+    };
+
     // Main optimization loop
-    for _ in (0..max_iters.unwrap_or(250))
-        .progress()
-        .with_style(ProgressStyle::with_template(
-            "{msg} ETA:{eta}, [{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>6}/{len:6}",
-        )?)
-    {
+    for i in 0..max_iters.unwrap_or(250) {
+        pbar.set_position(i as u64);
+
         // Create mapping from params and use it to warp all points
         let mapping = Mapping::from_params(&params);
         let warped_points = points.par_iter().map(mapping.warpfn());
@@ -250,19 +267,17 @@ where
         }
     }
 
-    Ok((
-        Mapping::from_params(&params).inverse(),
-        params_history
-    ))
+    Ok((Mapping::from_params(&params).inverse(), params_history))
 }
 
+#[allow(clippy::type_complexity)]
 pub fn hierarchical_iclk<P>(
     im1: &Image<P>,
     im2: &Image<P>,
     init_mapping: Mapping,
     max_iters: Option<i32>,
     min_dimensions: (u32, u32),
-    max_levels: i32,
+    max_levels: u32,
     stop_early: Option<f32>,
 ) -> Result<(Mapping, HashMap<u32, Vec<Vec<f32>>>)>
 where
@@ -289,16 +304,23 @@ where
     {
         // Compute mapping at lowest resolution first and double resolution it at each iteration
         let current_scale = (1 << (num_lvls - i - 1)) as f32;
-        println!("Using scale {:}", &current_scale);
 
         // Perform optimization at lvl
         let params_history;
-        (mapping, params_history) = iclk_grayscale(&im1, &im2, gradients(&im2), mapping, max_iters, stop_early)?;
+        (mapping, params_history) = iclk_grayscale(
+            im1,
+            im2,
+            gradients(im2),
+            mapping,
+            max_iters,
+            stop_early,
+            Some(&format!("Using scale {:}", &current_scale)),
+        )?;
 
         // Re-normalize mapping to scale of next level of pyramid
         mapping = mapping.transform(
             Some(Mapping::scale(2.0, 2.0)),
-            Some(Mapping::scale(0.5, 0.5)), 
+            Some(Mapping::scale(0.5, 0.5)),
         );
 
         // Save level's param history
@@ -308,8 +330,7 @@ where
     Ok((mapping, all_params_history))
 }
 
-
-pub fn img_pyramid<P>(im: &Image<P>, min_dimensions: (u32, u32), max_levels: i32) -> Vec<Image<P>>
+pub fn img_pyramid<P>(im: &Image<P>, min_dimensions: (u32, u32), max_levels: u32) -> Vec<Image<P>>
 where
     P: Pixel + 'static,
 {
@@ -319,7 +340,10 @@ where
 
     for _ in 0..max_levels {
         if w > min_width && h > min_height {
-            (w, h) = ((w as f32 / 2.0).round() as u32, (h as f32 / 2.0).round() as u32);
+            (w, h) = (
+                (w as f32 / 2.0).round() as u32,
+                (h as f32 / 2.0).round() as u32,
+            );
             let resized = resize(im, w, h, FilterType::CatmullRom);
             stack.push(resized);
         }

@@ -32,7 +32,6 @@ pub struct Mapping {
     pub kind: TransformationType,
 }
 
-
 impl Mapping {
     /// Return the mapping that trasforms a point using a 3x3 matrix.
     pub fn from_matrix(mat: Array2<f32>, kind: TransformationType) -> Self {
