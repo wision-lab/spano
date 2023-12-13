@@ -1,55 +1,81 @@
-use ffmpeg_sidecar::paths::sidecar_dir;
-use ffmpeg_sidecar::{
-    command::{ffmpeg_is_installed, FfmpegCommand},
-    event::{FfmpegEvent, FfmpegProgress},
-};
-use indicatif::{ProgressBar, ProgressStyle};
+use std::fs::File;
+use std::io::{BufReader, Read};
+use std::path::Path;
 
-const DEBUG_FFMPEG: bool = false;
+use anyhow::{anyhow, Result};
+use flate2::read::GzDecoder;
+use memmap2::{Mmap, MmapOptions};
+use ndarray::{Array, Array2, Array3, ArrayView3};
+use ndarray_npy::{ReadNpyExt, ViewNpyError, ViewNpyExt};
 
-pub fn ensure_ffmpeg(verbose: bool) {
-    if !ffmpeg_is_installed() {
-        if verbose {
-            println!(
-                "No ffmpeg installation found, downloading one to {}...",
-                &sidecar_dir().unwrap().display()
-            );
-        }
-        ffmpeg_sidecar::download::auto_download().unwrap();
-    }
+use crate::utils::sorted_glob;
+
+pub struct PhotonCube {
+    _storage: PhotonCubeStorage,
 }
 
-pub fn make_video(
-    pattern: &str,
-    outfile: &str,
-    fps: u64,
-    num_frames: u64,
-    pbar_style: Option<ProgressStyle>,
-) {
-    let pbar = if let Some(style) = pbar_style {
-        ProgressBar::new(num_frames).with_style(style)
-    } else {
-        ProgressBar::hidden()
-    };
+// These are needed to keep the underlying object's data in scope
+// otherwise we get a use-after-free error.
+// We use an enum here as either an array OR a memap object is needed.
+enum PhotonCubeStorage {
+    ArrayStorage(Array3<u8>),
+    MmapStorage(Mmap),
+}
 
-    let cmd = format!(
-        "-framerate {fps} -f image2 -i {pattern} -y -vcodec libx264 -crf 22 -pix_fmt yuv420p {outfile}"
-    );
-
-    let mut ffmpeg_runner = FfmpegCommand::new()
-        .args(cmd.split(' '))
-        // .print_command()
-        .spawn()
-        .unwrap();
-
-    ffmpeg_runner.iter().unwrap().for_each(|e| match e {
-        FfmpegEvent::Progress(FfmpegProgress { frame, .. }) => pbar.set_position(frame as u64),
-        FfmpegEvent::Log(_level, msg) => {
-            if DEBUG_FFMPEG {
-                println!("[ffmpeg] {msg}")
-            }
+impl PhotonCube {
+    pub fn view(&self) -> Result<ArrayView3<u8>, ViewNpyError> {
+        match &self._storage {
+            PhotonCubeStorage::ArrayStorage(arr) => Ok(arr.view()),
+            PhotonCubeStorage::MmapStorage(mmap) => ArrayView3::<u8>::view_npy(&mmap),
         }
-        _ => {}
-    });
-    pbar.finish_and_clear();
+    }
+
+    pub fn load(path_str: &str) -> Result<Self> {
+        let path = Path::new(path_str);
+
+        if !path.exists() {
+            // This should probably be a specific IO error?
+            return Err(anyhow!("File not found at {}!", path_str));
+        } else if path.is_dir() {
+            let (h, w) = (256, 512);
+            let paths = sorted_glob(path, "**/*.bin")?;
+
+            if paths.is_empty() {
+                return Err(anyhow!("No .bin files found in {}!", path_str));
+            }
+
+            let mut buffer = Vec::new();
+
+            for p in paths {
+                let mut f = File::open(p)?;
+                f.read_to_end(&mut buffer)?;
+            }
+
+            let t = buffer.len() / (h * w / 8);
+            let arr = Array::from_vec(buffer)
+                .into_shape((t, h, w / 8))?
+                .mapv(|v| v.reverse_bits());
+
+            Ok(Self {
+                _storage: PhotonCubeStorage::ArrayStorage(arr),
+            })
+        } else {
+            let ext = path.extension().unwrap().to_ascii_lowercase();
+
+            if ext != "npy" {
+                // This should probably be a specific IO error?
+                return Err(anyhow!(
+                    "Expexted numpy array with extension `npy`, got {:?}.",
+                    ext
+                ));
+            }
+
+            let file = File::open(path_str)?;
+            let mmap = unsafe { Mmap::map(&file)? };
+
+            Ok(Self {
+                _storage: PhotonCubeStorage::MmapStorage(mmap),
+            })
+        }
+    }
 }

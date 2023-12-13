@@ -13,7 +13,7 @@ use imageproc::{
 
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::{izip, Itertools};
-use ndarray::{par_azip, s, stack, Array1, Array2, ArrayBase, Axis, NewAxis};
+use ndarray::{array, par_azip, s, stack, Array1, Array2, ArrayBase, Axis, NewAxis};
 use ndarray_linalg::solve::Inverse;
 use nshare::ToNdarray2;
 use rayon::prelude::*;
@@ -237,7 +237,14 @@ where
 
         // Create mapping from params and use it to warp all points
         let mapping = Mapping::from_params(&params);
-        let warped_points = points.par_iter().map(mapping.warpfn());
+
+        // TODO: This is bad, it creates and imediately unpacks arrays...
+        let warped_points = points.par_iter().map(|&(x, y)| {
+            let [x_, y_] = mapping.warp_points(array![[x, y]]).into_raw_vec()[..] else {
+                panic!()
+            };
+            (x_, y_)
+        });
         let warped_im1gray_pixels: Vec<Option<f32>> = warped_points.map(sampler).collect();
 
         // Calculate parameter update dp
@@ -318,10 +325,13 @@ where
         )?;
 
         // Re-normalize mapping to scale of next level of pyramid
-        mapping = mapping.transform(
-            Some(Mapping::scale(2.0, 2.0)),
-            Some(Mapping::scale(0.5, 0.5)),
-        );
+        // But not on last iteration (since we're already at full scale)
+        if i + 1 < num_lvls {
+            mapping = mapping.transform(
+                Some(Mapping::scale(2.0, 2.0)),
+                Some(Mapping::scale(0.5, 0.5)),
+            );
+        }
 
         // Save level's param history
         all_params_history.insert(current_scale as u32, params_history);

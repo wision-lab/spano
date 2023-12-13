@@ -1,5 +1,5 @@
 pub use clap::Parser;
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
@@ -61,4 +61,17 @@ pub struct LKArgs {
 pub enum Commands {
     /// Perform Lucas-Kanade homography estimation between two images and animate optimization process.
     LK(LKArgs),
+
+    /// Estimate pairwise homographies and interpolate to all frames.
+    Pano(LKArgs),
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug)]
+pub enum Transform {
+    Identity,
+    Rot90,
+    Rot180,
+    Rot270,
+    FlipUD,
+    FlipLR,
 }

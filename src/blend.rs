@@ -4,7 +4,7 @@ use imageproc::{
     definitions::{Clamp, Image},
     math::cast,
 };
-use ndarray::{s, Array1, Array2};
+use ndarray::{array, s, Array1, Array2};
 
 /// Again, this is almost lifted verbatum from:
 ///     https://docs.rs/imageproc/0.23.0/src/imageproc/geometric_transformations.rs.html#681
@@ -46,6 +46,55 @@ where
     }
 }
 
+/// Again, this is almost lifted verbatum from:
+///     https://docs.rs/imageproc/0.23.0/src/imageproc/geometric_transformations.rs.html#681
+/// But alas, this function is not declared as public so we can't just import it...
+pub fn interpolate_bilinear_with_bkg<P>(image: &Image<P>, x: f32, y: f32, background: P) -> P
+where
+    P: Pixel,
+    <P as Pixel>::Subpixel: ValueInto<f32> + Clamp<f32>,
+{
+    let left = x.floor();
+    let right = left + 1f32;
+    let top = y.floor();
+    let bottom = top + 1f32;
+
+    let right_weight = x - left;
+    let bottom_weight = y - top;
+
+    let (width, height) = image.dimensions();
+
+    if right_weight.abs() < 1e-8 && bottom_weight.abs() < 1e-8 {
+        // TODO: Does this case hit enough that it's a net speedup?
+        // If it's integer, return that pixel
+        image
+            .get_pixel_checked(x as u32, y as u32)
+            .map(|p| p.to_owned())
+            .unwrap()
+    } else {
+        // Do the interpolation
+        let (tl, tr, bl, br) = (
+            image
+                .get_pixel_checked(left as u32, top as u32)
+                .map(|p| p.to_owned())
+                .unwrap_or(background),
+            image
+                .get_pixel_checked(right as u32, top as u32)
+                .map(|p| p.to_owned())
+                .unwrap_or(background),
+            image
+                .get_pixel_checked(left as u32, bottom as u32)
+                .map(|p| p.to_owned())
+                .unwrap_or(background),
+            image
+                .get_pixel_checked(right as u32, bottom as u32)
+                .map(|p| p.to_owned())
+                .unwrap_or(background),
+        );
+        blend_bilinear(tl, tr, bl, br, right_weight, bottom_weight)
+    }
+}
+
 /// Again, this is lifted almost verbatum from the imageproc crate...
 pub fn blend_bilinear<P>(
     top_left: P,
@@ -78,7 +127,7 @@ pub fn polygon_sdf_vec(vertices: Array2<f32>) -> impl Fn(f32, f32) -> f32 {
 
     move |x: f32, y: f32| {
         let num = vertices.shape()[0];
-        let point = Array1::from_vec(vec![x, y]);
+        let point = array![x, y];
         let mut d = (vertices.slice(s![0, ..]).to_owned() - &point)
             .mapv(|v| v * v)
             .sum();

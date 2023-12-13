@@ -1,35 +1,35 @@
 use std::collections::HashMap;
 use std::convert::From;
 use std::fs::{create_dir_all, remove_dir_all};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use glob::glob;
 use image::imageops::{resize, FilterType};
 use image::{io::Reader as ImageReader, GrayImage, ImageBuffer, Rgb, RgbImage};
 use imageproc::drawing::{draw_text_mut, text_size};
 use itertools::Itertools;
+use natord::compare;
 use ndarray::{Array2, Axis};
 use rusttype::{Font, Scale};
 
-use crate::blend::interpolate_bilinear;
-use crate::io::{ensure_ffmpeg, make_video};
+use crate::blend::interpolate_bilinear_with_bkg;
+use crate::ffmpeg::{ensure_ffmpeg, make_video};
+use crate::transforms::annotate;
 use crate::warps::{warp, Mapping};
 
-pub fn array2grayimage(frame: Array2<u8>) -> Option<GrayImage> {
-    GrayImage::from_raw(
-        frame.len_of(Axis(1)) as u32,
-        frame.len_of(Axis(0)) as u32,
-        frame.into_raw_vec(),
-    )
-}
+pub fn sorted_glob(path: &Path, pattern: &str) -> Result<Vec<String>> {
+    let paths: Vec<PathBuf> =
+        glob(path.join(pattern).to_str().unwrap())?.collect::<Result<Vec<PathBuf>, _>>()?;
+    let paths: Vec<&str> = paths
+        .iter()
+        .map(|v| v.to_str())
+        .collect::<Option<Vec<&str>>>()
+        .unwrap();
+    let mut paths: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
+    paths.sort_by(|a, b| compare(a, b));
 
-pub fn annotate(frame: &mut RgbImage, text: &str) {
-    let font = Vec::from(include_bytes!("DejaVuSans.ttf") as &[u8]);
-    let font = Font::try_from_vec(font).unwrap();
-    let scale = Scale { x: 20.0, y: 20.0 };
-
-    draw_text_mut(frame, Rgb([252, 186, 3]), 5, 5, scale, &font, text);
-    text_size(scale, &font, text);
+    Ok(paths)
 }
 
 pub fn animate_warp(
@@ -55,7 +55,7 @@ pub fn animate_warp(
         .enumerate()
     {
         let mut out = ImageBuffer::new(w, h);
-        let get_pixel = |x, y| interpolate_bilinear(&img, x, y).unwrap_or(Rgb([128, 128, 128]));
+        let get_pixel = |x, y| interpolate_bilinear_with_bkg(&img, x, y, Rgb([128, 128, 128]));
         warp(
             &mut out,
             Mapping::from_params(params)
@@ -116,7 +116,7 @@ pub fn animate_hierarchical_warp(
             h,
             FilterType::CatmullRom,
         );
-        let get_pixel = |x, y| interpolate_bilinear(&resized, x, y).unwrap_or(Rgb([128, 128, 128]));
+        let get_pixel = |x, y| interpolate_bilinear_with_bkg(&resized, x, y, Rgb([128, 128, 128]));
 
         for params in params_history.iter().step_by(step.unwrap_or(10)) {
             let mut out = ImageBuffer::new(w, h);
