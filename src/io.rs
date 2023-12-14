@@ -25,7 +25,7 @@ impl PhotonCube {
     pub fn view(&self) -> Result<ArrayView3<u8>, ViewNpyError> {
         match &self._storage {
             PhotonCubeStorage::ArrayStorage(arr) => Ok(arr.view()),
-            PhotonCubeStorage::MmapStorage(mmap) => ArrayView3::<u8>::view_npy(&mmap),
+            PhotonCubeStorage::MmapStorage(mmap) => ArrayView3::<u8>::view_npy(mmap),
         }
     }
 
@@ -34,7 +34,7 @@ impl PhotonCube {
 
         if !path.exists() {
             // This should probably be a specific IO error?
-            return Err(anyhow!("File not found at {}!", path_str));
+            Err(anyhow!("File not found at {}!", path_str))
         } else if path.is_dir() {
             let (h, w) = (256, 512);
             let paths = sorted_glob(path, "**/*.bin")?;

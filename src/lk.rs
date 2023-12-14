@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use conv::{ValueFrom, ValueInto};
 use image::imageops::colorops::grayscale;
 use image::imageops::{resize, FilterType};
-use image::{GenericImageView, Luma, Pixel, Primitive};
+use image::{Luma, Pixel, Primitive};
 use imageproc::{
     definitions::{Clamp, Image},
     filter::filter3x3,
@@ -22,8 +22,6 @@ use crate::{
     blend::interpolate_bilinear,
     warps::{Mapping, TransformationType},
 };
-
-type Subpixel<I> = <<I as GenericImageView>::Pixel as Pixel>::Subpixel;
 
 /// Compute image gradients using Sobel operator
 /// Returned (dx, dy) pair as HxW arrays.

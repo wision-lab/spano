@@ -22,14 +22,14 @@ mod transforms;
 mod utils;
 mod warps;
 
-use crate::blend::{interpolate_bilinear_with_bkg, polygon_sdf_vec};
-use crate::cli::{Cli, Commands, LKArgs, Parser};
-use crate::ffmpeg::make_video;
-use crate::io::PhotonCube;
-use crate::lk::{gradients, hierarchical_iclk, iclk, iclk_grayscale};
-use crate::transforms::{array2grayimage, process_colorspad, unpack_single};
-use crate::utils::{animate_hierarchical_warp, animate_warp};
-use crate::warps::{warp, Mapping, TransformationType};
+use blend::{interpolate_bilinear_with_bkg, polygon_sdf_vec};
+use cli::{Cli, Commands, LKArgs, Parser};
+use ffmpeg::make_video;
+use io::PhotonCube;
+use lk::{gradients, hierarchical_iclk, iclk, iclk_grayscale};
+use transforms::{array2grayimage, process_colorspad, unpack_single};
+use utils::{animate_hierarchical_warp, animate_warp};
+use warps::{warp, Mapping, TransformationType};
 
 fn print_type_of<T>(_: &T) {
     println!("{}", std::any::type_name::<T>())

@@ -1,11 +1,10 @@
 use std::convert::{From, Into};
-use std::process;
 
 use anyhow::{anyhow, Result};
 use rand::Rng;
 use rusttype::{Font, Scale};
 
-use image::{imageops, GrayImage, ImageBuffer, Luma, Rgb, RgbImage};
+use image::{imageops, ImageBuffer, Luma, Rgb, RgbImage};
 use imageproc::drawing::{draw_text_mut, text_size};
 use imageproc::map::map_pixels;
 
