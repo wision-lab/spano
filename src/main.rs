@@ -7,11 +7,9 @@ use image::Luma;
 use image::{io::Reader as ImageReader, ImageBuffer, Rgb};
 use indicatif::{ProgressIterator, ProgressStyle};
 use itertools::Itertools;
-use memmap2::{Mmap, MmapOptions};
-use ndarray::{array, s, Array, Array1, Array2, Array3, ArrayView3, Axis, Slice};
-use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
+use ndarray::{Array, Axis, Slice};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::fs::create_dir_all;
-use std::iter::successors;
 use std::path::Path;
 use tempfile::tempdir;
 

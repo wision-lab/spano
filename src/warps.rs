@@ -1,10 +1,8 @@
-use std::ops::Div;
 use std::ops::DivAssign;
 
 use conv::ValueInto;
 use image::Pixel;
 use imageproc::definitions::{Clamp, Image};
-use itertools::multiunzip;
 use ndarray::stack;
 use ndarray::{array, concatenate, s, Array1, Array2, Axis};
 use ndarray_interp::interp1d::{CubicSpline, Interp1DBuilder};
@@ -314,7 +312,7 @@ where
 #[cfg(test)]
 mod test_warps {
     use approx::assert_relative_eq;
-    use ndarray::{array, Array2};
+    use ndarray::array;
 
     use crate::warps::{Mapping, TransformationType};
 

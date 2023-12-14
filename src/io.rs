@@ -1,12 +1,11 @@
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::Read;
 use std::path::Path;
 
 use anyhow::{anyhow, Result};
-use flate2::read::GzDecoder;
-use memmap2::{Mmap, MmapOptions};
-use ndarray::{Array, Array2, Array3, ArrayView3};
-use ndarray_npy::{ReadNpyExt, ViewNpyError, ViewNpyExt};
+use memmap2::Mmap;
+use ndarray::{Array, Array3, ArrayView3};
+use ndarray_npy::{ViewNpyError, ViewNpyExt};
 
 use crate::utils::sorted_glob;
 

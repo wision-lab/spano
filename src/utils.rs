@@ -1,17 +1,13 @@
 use std::collections::HashMap;
-use std::convert::From;
 use std::fs::{create_dir_all, remove_dir_all};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use glob::glob;
 use image::imageops::{resize, FilterType};
-use image::{io::Reader as ImageReader, GrayImage, ImageBuffer, Rgb, RgbImage};
-use imageproc::drawing::{draw_text_mut, text_size};
+use image::{io::Reader as ImageReader, ImageBuffer, Rgb};
 use itertools::Itertools;
 use natord::compare;
-use ndarray::{Array2, Axis};
-use rusttype::{Font, Scale};
 
 use crate::blend::interpolate_bilinear_with_bkg;
 use crate::ffmpeg::{ensure_ffmpeg, make_video};
