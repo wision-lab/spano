@@ -31,6 +31,10 @@ pub struct Cli {
     /// Output directory to save individual frames to [default: tmpdir]
     #[arg(short = 'd', long, global = true)]
     pub img_dir: Option<String>,
+
+    /// Apply transformations to each frame (these can be composed)
+    #[arg(short, long, value_enum, num_args(0..), global=true)]
+    pub transform: Vec<Transform>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -64,6 +68,9 @@ pub enum Commands {
 
     /// Estimate pairwise homographies and interpolate to all frames.
     Pano(LKArgs),
+
+    /// TEST WARPS
+    Warp(LKArgs),
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug)]

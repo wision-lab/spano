@@ -19,7 +19,7 @@ itertools = "0.12.0"
 memmap2 = "0.9.0"
 natord = "1.0.9"
 ndarray = { version = "0.15.6", features = ["approx-0_5", "rayon", "matrixmultiply-threading"] }
-ndarray-interp = "0.4.1"
+ndarray-interp = { path = "../ndarray-interp" }
 ndarray-linalg = { version = "0.16.0", features = ["intel-mkl-static"]}
 ndarray-npy = "0.8.1"
 ndarray-stats = "0.5.1"

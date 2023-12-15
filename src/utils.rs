@@ -5,14 +5,14 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use glob::glob;
 use image::imageops::{resize, FilterType};
-use image::{io::Reader as ImageReader, ImageBuffer, Rgb};
+use image::{io::Reader as ImageReader, Rgb};
 use itertools::Itertools;
 use natord::compare;
 
 use crate::blend::interpolate_bilinear_with_bkg;
 use crate::ffmpeg::{ensure_ffmpeg, make_video};
 use crate::transforms::annotate;
-use crate::warps::{warp, Mapping};
+use crate::warps::{warp_image, Mapping};
 
 pub fn sorted_glob(path: &Path, pattern: &str) -> Result<Vec<String>> {
     let paths: Vec<PathBuf> =
@@ -50,18 +50,12 @@ pub fn animate_warp(
         .step_by(step.unwrap_or(100))
         .enumerate()
     {
-        let mut out = ImageBuffer::new(w, h);
         let get_pixel = |x, y| interpolate_bilinear_with_bkg(&img, x, y, Rgb([128, 128, 128]));
-        warp(
-            &mut out,
-            Mapping::from_params(params)
-                .inverse()
-                .transform(
-                    Some(Mapping::scale(scale, scale)),
-                    Some(Mapping::scale(1.0 / scale, 1.0 / scale)),
-                )
-                .warpfn(),
+        let out = warp_image(
+            &Mapping::from_params(params).inverse().rescale(1.0 / scale),
             get_pixel,
+            w,
+            h,
         );
 
         let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
@@ -115,17 +109,11 @@ pub fn animate_hierarchical_warp(
         let get_pixel = |x, y| interpolate_bilinear_with_bkg(&resized, x, y, Rgb([128, 128, 128]));
 
         for params in params_history.iter().step_by(step.unwrap_or(10)) {
-            let mut out = ImageBuffer::new(w, h);
-            warp(
-                &mut out,
-                Mapping::from_params(params)
-                    .inverse()
-                    .transform(
-                        Some(Mapping::scale(scale, scale)),
-                        Some(Mapping::scale(1.0 / scale, 1.0 / scale)),
-                    )
-                    .warpfn(),
+            let mut out = warp_image(
+                &Mapping::from_params(params).inverse().rescale(1.0 / scale),
                 get_pixel,
+                w,
+                h,
             );
             annotate(&mut out, &format!("Scale: 1/{:.2}", scale));
 

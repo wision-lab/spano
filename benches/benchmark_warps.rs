@@ -1,20 +1,18 @@
-use criterion::{criterion_group, criterion_main, Criterion};
-use image::{io::Reader as ImageReader, ImageBuffer, Rgb};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use image::{io::Reader as ImageReader, Rgb};
+
 use ndarray::array;
+use spano::{interpolate_bilinear_with_bkg, warp_image, Mapping, TransformationType};
 
-use spano::{interpolate_bilinear_with_bkg, warp, Mapping, TransformationType};
-
-pub fn criterion_benchmark(c: &mut Criterion) {
+pub fn benchmark_warp(c: &mut Criterion) {
     let img = ImageReader::open("madison1.png")
         .unwrap()
         .decode()
         .unwrap()
         .into_rgb8();
     let (w, h) = img.dimensions();
-    let mut out = ImageBuffer::new(w, h);
 
     let get_pixel = |x, y| interpolate_bilinear_with_bkg(&img, x, y, Rgb([128, 0, 0]));
-
     let map = Mapping::from_matrix(
         array![
             [1.13411823, 4.38092511, 9.315785],
@@ -26,10 +24,10 @@ pub fn criterion_benchmark(c: &mut Criterion) {
 
     c.bench_function("warp", |b| {
         b.iter(|| {
-            warp(&mut out, map.warpfn(), get_pixel);
+            warp_image(&map, get_pixel, w, h);
         })
     });
 }
 
-criterion_group!(benches, criterion_benchmark);
+criterion_group!(benches, benchmark_warp);
 criterion_main!(benches);

@@ -1,10 +1,11 @@
 use std::convert::{From, Into};
 
 use anyhow::{anyhow, Result};
+use imageproc::definitions::Image;
 use rand::Rng;
 use rusttype::{Font, Scale};
 
-use image::{imageops, ImageBuffer, Luma, Rgb, RgbImage};
+use image::{imageops, ImageBuffer, Luma, Pixel, Rgb, RgbImage};
 use imageproc::drawing::{draw_text_mut, text_size};
 use imageproc::map::map_pixels;
 
@@ -71,7 +72,10 @@ pub fn annotate(frame: &mut RgbImage, text: &str) {
     text_size(scale, &font, text);
 }
 
-pub fn apply_transform(frame: RgbImage, transform: &[Transform]) -> RgbImage {
+pub fn apply_transform<P>(frame: Image<P>, transform: &[Transform]) -> Image<P>
+where
+    P: Pixel + 'static,
+{
     // Note: if we don't shadow `frame` as a mut, we cannot override it in the loop
     let mut frame = frame;
 

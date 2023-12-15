@@ -2,13 +2,16 @@
 #![allow(unused_imports)]
 
 use anyhow::{anyhow, Result};
-use image::imageops::{resize, FilterType};
-use image::Luma;
+use image::imageops::{grayscale, resize, FilterType};
 use image::{io::Reader as ImageReader, ImageBuffer, Rgb};
+use image::{GrayImage, Luma};
 use indicatif::{ProgressIterator, ProgressStyle};
 use itertools::Itertools;
-use ndarray::{Array, Axis, Slice};
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use ndarray::{array, Array, Array2, Axis, Slice};
+use nshare::{ToNdarray2, ToNdarray3};
+use rayon::iter::{
+    IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
+};
 use std::fs::create_dir_all;
 use std::path::Path;
 use tempfile::tempdir;
@@ -29,7 +32,10 @@ use io::PhotonCube;
 use lk::{gradients, hierarchical_iclk, iclk, iclk_grayscale};
 use transforms::{array2grayimage, process_colorspad, unpack_single};
 use utils::{animate_hierarchical_warp, animate_warp};
-use warps::{warp, Mapping, TransformationType};
+use warps::{sample_warped_grid, warp_image, Mapping, TransformationType};
+
+use crate::blend::distance_transform;
+use crate::transforms::apply_transform;
 
 fn print_type_of<T>(_: &T) {
     println!("{}", std::any::type_name::<T>())
@@ -113,9 +119,8 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
         mapping
     };
 
-    let mut out = ImageBuffer::new(w, h);
     let get_pixel = |x, y| interpolate_bilinear_with_bkg(&img2, x, y, Rgb([128, 0, 0]));
-    warp(&mut out, mapping.warpfn(), get_pixel);
+    let out = warp_image(&mapping, get_pixel, w, h);
     out.save(global_args.output.unwrap_or("out.png".to_string()))?;
 
     println!("{:#?}", &mapping.mat);
@@ -129,6 +134,36 @@ fn main() -> Result<()> {
     match &args.command {
         None => Err(anyhow!("Only `LK` subcommand is currently implemented.")),
         Some(Commands::LK(lk_args)) => match_imgpair(args.clone(), lk_args.clone()),
+        Some(Commands::Warp(_)) => {
+            let map = Mapping::from_matrix(
+                array![
+                    [0.47654548, -0.045553986, 4.847797],
+                    [-0.14852144, 0.6426208, 2.1364543],
+                    [-0.009891294, -0.0021317923, 0.88151735]
+                ],
+                TransformationType::Projective,
+            )
+            .rescale(1.0 / 16.0);
+
+            let img = ImageReader::open("madison2.png")
+                .unwrap()
+                .decode()
+                .unwrap()
+                .into_rgb8();
+            let (w, h) = img.dimensions();
+
+            // Warp with warp_image: Slower but no jaggies
+            let get_pixel = |x, y| interpolate_bilinear_with_bkg(&img, x, y, Rgb([128, 0, 0]));
+            let out = warp_image(&map, get_pixel, w, h);
+            out.save("out1.png")?;
+
+            // Warp with sample_warped_grid: faster but single channel and jaggies
+            let data = grayscale(&img).into_ndarray2().mapv(|v| v as f32);
+            let (out, _) = sample_warped_grid(&map, data, w as usize, h as usize, false);
+            let out = array2grayimage(out.mapv(|v| v as u8).into_shape((h as usize, w as usize))?);
+            out.save("out2.png")?;
+            Ok(())
+        }
         Some(Commands::Pano(lk_args)) => {
             let cube = PhotonCube::load("../photoncube2video/data/binary.npy")?;
             let cube_view = cube.view()?;
@@ -137,7 +172,7 @@ fn main() -> Result<()> {
             let burst_size = 256;
 
             // Create parallel iterator over all chunks of frames and process them
-            let (virtual_exposures, sizes): (Vec<_>, Vec<(u32, u32)>) = cube_view
+            let (virtual_exposures, mut sizes): (Vec<_>, Vec<(u32, u32)>) = cube_view
                 .axis_chunks_iter(Axis(0), burst_size)
                 // Make it parallel
                 .into_par_iter()
@@ -153,11 +188,17 @@ fn main() -> Result<()> {
                         // Compute mean values and save as uint8's
                         .mapv(|v| (v / (burst_size as f32) * 255.0).round() as u8);
 
-                    // Convert to image and resize
+                    // Convert to image and resize/transform
                     let img = array2grayimage(process_colorspad(frame));
-                    let w = (img.width() as f32 / lk_args.downscale).round() as u32;
-                    let h = (img.height() as f32 / lk_args.downscale).round() as u32;
-                    (resize(&img, w, h, FilterType::CatmullRom), (w, h))
+                    let img = resize(
+                        &img,
+                        (img.width() as f32 / lk_args.downscale).round() as u32,
+                        (img.height() as f32 / lk_args.downscale).round() as u32,
+                        FilterType::CatmullRom,
+                    );
+                    let img = apply_transform(img, &args.transform);
+                    let (w, h) = (img.width(), img.height());
+                    (img, (w, h))
                 })
                 // Force iteratpor to run to completion to get correct ordering
                 .unzip();
@@ -169,13 +210,13 @@ fn main() -> Result<()> {
                 .with_style(ProgressStyle::with_template(
                     "{msg} ETA:{eta}, [{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>6}/{len:6}",
                 )?)
-                .with_message(format!("Lvl 1:").to_owned())
+                .with_message("Lvl 1:".to_string())
                 .tuple_windows()
                 .map(|(src, dst)| {
                     iclk_grayscale(
                         src,                             // im1_gray
                         dst,                             // im2_gray
-                        gradients(&dst),                 // im2_grad,
+                        gradients(dst),                  // im2_grad,
                         Mapping::from_params(&[0.0; 8]), // init_mapping
                         Some(lk_args.iterations),        // max_iters
                         Some(lk_args.early_stop),        // stop_early
@@ -184,13 +225,7 @@ fn main() -> Result<()> {
                     // Drop param_history and rescale transform to full-size
                     .map(|(mapping, _)| {
                         mapping
-                        // .transform(
-                        //     Some(Mapping::scale(lk_args.downscale, lk_args.downscale)),
-                        //     Some(Mapping::scale(
-                        //         1.0 / lk_args.downscale,
-                        //         1.0 / lk_args.downscale,
-                        //     )),
-                        // )
+                        // .rescale(1.0 / lk_args.downscale)
                     })
                 })
                 .collect::<Result<Vec<_>>>()?
@@ -212,60 +247,42 @@ fn main() -> Result<()> {
                 &mappings,
                 wrt_normalized_idx,
             );
-            let mappings = mappings
+            let mappings: Vec<Mapping> = mappings
                 .iter()
                 .map(|m| m.transform(Some(wrt_map.inverse()), None))
                 .collect();
 
-            // Validate all shapes are equal (re-write with dedup?)
-            let size: (u32, u32) = sizes
-                .iter()
-                .tuple_windows()
-                .all(|(a, b)| a == b)
-                .then(|| sizes[0])
-                .unwrap();
-            let (extent, offset) = Mapping::total_extent(&mappings, size);
-            // TODO: Unpack better??
+            // Validate all shapes are equal
+            sizes = sizes.into_iter().unique().collect();
+            let [size]: [(u32, u32)] = sizes[..] else {
+                return Err(anyhow!(
+                    "Expected all frames to have same shapes but found shapes: {sizes:#?}"
+                ));
+            };
+            let (extent, offset) = Mapping::maximum_extent(&mappings[..], size);
             let [canvas_w, canvas_h] = extent.to_vec()[..] else {
-                panic!()
+                unreachable!("Canvas should have width and height")
             };
             println!("{:}, {:}, {:?}", &canvas_w, &canvas_h, &offset);
 
             for (i, map) in mappings.iter().step_by(args.viz_step).enumerate() {
-                // let corners = map.transform(None, Some(offset.clone())).corners(size);
-                // let dst = polygon_sdf_vec(array![
-                //     [corners[0].0, corners[0].1],
-                //     [corners[1].0, corners[1].1],
-                //     [corners[2].0, corners[2].1],
-                //     [corners[3].0, corners[3].1],
-                // ]);
-                // // let weights = ImageBuffer::<Luma<f32>, Vec<f32>>::from_fn(
-                // //     canvas_w.ceil() as u32,
-                // //     canvas_h.ceil() as u32,
-                // //     |x, y| {
-                // //         Luma([dst(x as f32, y as f32)])
-                // //     }
-                // // );
-
-                // let weights = Array::from_shape_fn(
-                //     (canvas_w.ceil() as usize, canvas_h.ceil() as usize),
-                //     |(x, y)| dst(x as f32, y as f32),
-                // );
-                // let min = weights.fold(f32::INFINITY, |a, b| a.min(*b));
-                // let max = weights.fold(-f32::INFINITY, |a, b| a.max(*b));
-
-                // let img = array2grayimage::<u8>(
-                //     weights.mapv(|v| ((v - min) / (max - min) * 255.0).round() as u8),
-                // );
-
-                let mut img = ImageBuffer::new(canvas_w.ceil() as u32, canvas_h.ceil() as u32);
-                let get_pixel =
-                    |x, y| interpolate_bilinear_with_bkg(&virtual_exposures[i], x, y, Luma([128]));
-                warp(
-                    &mut img,
-                    map.transform(None, Some(offset.clone())).warpfn(),
-                    get_pixel,
+                let corners = map.transform(None, Some(offset.clone())).corners(size);
+                let weights = distance_transform(
+                    &corners,
+                    (canvas_h.ceil() as usize, canvas_w.ceil() as usize),
                 );
+                let img = array2grayimage(weights.mapv(|v| (v * 255.0).round() as u8));
+
+                // ------------------------------------------------------------
+
+                // let get_pixel =
+                //     |x, y| interpolate_bilinear_with_bkg(&virtual_exposures[i], x, y, Luma([128]));
+                // let img = warp_image(
+                //     &map.transform(None, Some(offset.clone())),
+                //     get_pixel,
+                //     canvas_w.ceil() as u32,
+                //     canvas_h.ceil() as u32,
+                // );
 
                 let path = Path::new(&"tmp/".to_string()).join(format!("frame{:06}.png", i));
                 img.save(&path)

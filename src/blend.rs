@@ -107,8 +107,21 @@ where
     })
 }
 
+/// Computes normalized and clipped distance transform (bwdist)
+pub fn distance_transform(corners: &Array2<f32>, size: (usize, usize)) -> Array2<f32> {
+    let dst = polygon_sdf_vec(corners);
+    let mut weights = Array2::from_shape_fn(size, |(y, x)| {
+        let dist = -dst(x as f32, y as f32);
+        dist.max(0.0)
+    });
+    let max = weights.fold(-f32::INFINITY, |a, b| a.max(*b));
+    weights.mapv_inplace(|v| v / max);
+
+    weights
+}
+
 /// Akin to the distance transform used by opencv or bwdist in MATLB but much more general.
-pub fn polygon_sdf_vec(vertices: Array2<f32>) -> impl Fn(f32, f32) -> f32 {
+pub fn polygon_sdf_vec(vertices: &Array2<f32>) -> impl Fn(f32, f32) -> f32 + '_ {
     // Adapted from: https://www.shadertoy.com/view/wdBXRW
 
     move |x: f32, y: f32| {

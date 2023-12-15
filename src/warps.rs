@@ -1,14 +1,16 @@
 use std::ops::DivAssign;
 
 use conv::ValueInto;
-use image::Pixel;
+use image::{ImageBuffer, Pixel};
 use imageproc::definitions::{Clamp, Image};
-use ndarray::stack;
 use ndarray::{array, concatenate, s, Array1, Array2, Axis};
-use ndarray_interp::interp1d::{CubicSpline, Interp1DBuilder};
+use ndarray::{stack, Array};
+use ndarray_interp::{
+    interp1d::{CubicSpline, Interp1DBuilder},
+    interp2d::{Bilinear, Interp2DBuilder},
+};
 use ndarray_linalg::solve::Inverse;
 use num_traits::AsPrimitive;
-use rayon::prelude::*;
 
 #[derive(Copy, Clone, Debug)]
 pub enum TransformationType {
@@ -87,41 +89,8 @@ impl Mapping {
         Self::from_params(&[0.0, 0.0])
     }
 
-    // TODO: Deprecate and use warp_points directly
     #[inline]
-    pub fn warpfn<T>(&self) -> impl Fn(&Array2<T>) -> Array2<f32> + '_
-    where
-        T: AsPrimitive<f32> + Copy + 'static,
-    {
-        move |points| self.warp_points(points.clone())
-    }
-
-    // #[inline]
-    // pub fn warp_point<T>(&self, p: (T, T)) -> (f32, f32)
-    // where
-    //     T: AsPrimitive<f32> + Copy + 'static,
-    // {
-    //     let (x, y) = p;
-    //     let x = x.as_();
-    //     let y = y.as_();
-
-    //     if self.is_identity {
-    //         return (x, y);
-    //     }
-
-    //     let point = Array1::from_vec(vec![x, y, 1.0]);
-    //     if let [x_, y_, d] = &self.mat.dot(&point).to_vec()[..] {
-    //         let d = d.max(1e-8);
-    //         (x_ / d, y_ / d)
-    //     } else {
-    //         // This should never occur as long as mat is a 3x3 matrix
-    //         // Maybe we should panic here as a better default?
-    //         (f32::NAN, f32::NAN)
-    //     }
-    // }
-
-    #[inline]
-    pub fn warp_points<T>(&self, points: Array2<T>) -> Array2<f32>
+    pub fn warp_points<T>(&self, points: &Array2<T>) -> Array2<f32>
     where
         T: AsPrimitive<f32> + Copy + 'static,
     {
@@ -187,16 +156,17 @@ impl Mapping {
         }
     }
 
+    pub fn rescale(&self, scale: f32) -> Self {
+        self.transform(
+            Some(Mapping::scale(1.0 / scale, 1.0 / scale)),
+            Some(Mapping::scale(scale, scale)),
+        )
+    }
+
     pub fn corners(&self, size: (u32, u32)) -> Array2<f32> {
         let (w, h) = size;
         let corners = array![[0, 0], [w, 0], [w, h], [0, h]];
-        self.inverse().warp_points(corners)
-
-        // let corners = vec![(0, 0), (w, 0), (w, h), (0, h)];
-        // corners
-        //     .into_iter()
-        //     .map(|p| self.inverse().warp_point(p))
-        //     .collect()
+        self.inverse().warp_points(&corners)
     }
 
     pub fn extent(&self, size: (u32, u32)) -> (Array1<f32>, Array1<f32>) {
@@ -208,17 +178,9 @@ impl Mapping {
             view.iter().fold(-f32::INFINITY, |a, b| a.max(*b))
         });
         (min_coords, max_coords)
-
-        // let (warped_x, warped_y): (Vec<_>, Vec<_>) = self.corners(size).into_iter().unzip();
-        // (
-        //     warped_x.iter().fold(f32::INFINITY, |a, b| a.min(*b)), // Min x
-        //     warped_x.iter().fold(-f32::INFINITY, |a, b| a.max(*b)), // Max x
-        //     warped_y.iter().fold(f32::INFINITY, |a, b| a.min(*b)), // Min x
-        //     warped_y.iter().fold(-f32::INFINITY, |a, b| a.max(*b)), // Max x
-        // )
     }
 
-    pub fn total_extent(maps: &Vec<Self>, size: (u32, u32)) -> (Array1<f32>, Self) {
+    pub fn maximum_extent(maps: &[Self], size: (u32, u32)) -> (Array1<f32>, Self) {
         let (min_coords, max_coords): (Vec<Array1<f32>>, Vec<Array1<f32>>) =
             maps.iter().map(|m| m.extent(size)).unzip();
 
@@ -239,24 +201,12 @@ impl Mapping {
         let extent = max_coords - &min_coords;
         let offset = Mapping::from_params(&min_coords.to_vec()[..]);
         (extent, offset)
-
-        // let extents = maps.iter().map(|m| m.extent(size));
-        // let (x_min, x_max, y_min, y_max): (Vec<_>, Vec<_>, Vec<_>, Vec<_>) = multiunzip(extents);
-
-        // let (x_min, x_max, y_min, y_max) = (
-        //     x_min.iter().fold(f32::INFINITY, |a, b| a.min(*b)), // Min x
-        //     x_max.iter().fold(-f32::INFINITY, |a, b| a.max(*b)), // Max x
-        //     y_min.iter().fold(f32::INFINITY, |a, b| a.min(*b)), // Min x
-        //     y_max.iter().fold(-f32::INFINITY, |a, b| a.max(*b)), // Max x
-        // );
-
-        // ((x_max - x_min, y_max - y_min), Self::shift(x_min, y_min))
     }
 
     pub fn interpolate_array(ts: Array1<f32>, maps: &Vec<Self>, query: Array1<f32>) -> Vec<Self> {
         let params = Array2::from_shape_vec(
             (maps.len(), 8),
-            maps.iter().map(|m| m.get_params_full()).flatten().collect(),
+            maps.iter().flat_map(|m| m.get_params_full()).collect(),
         )
         .unwrap();
 
@@ -281,34 +231,84 @@ impl Mapping {
     }
 }
 
-/// Warp an image into a pre-allocated buffer
-/// TODO: Can this be made SIMD?
-/// Heavily modeled from
-///     https://docs.rs/imageproc/0.23.0/src/imageproc/geometric_transformations.rs.html#496
-pub fn warp<P, Fi, Fc>(out: &mut Image<P>, mapping: Fc, get_pixel: Fi)
+pub fn warp_image<P, Fi>(mapping: &Mapping, get_pixel: Fi, width: u32, height: u32) -> Image<P>
 where
     P: Pixel,
     <P as Pixel>::Subpixel: Send + Sync,
     <P as Pixel>::Subpixel: ValueInto<f32> + Clamp<f32>,
-    Fc: Fn(&Array2<f32>) -> Array2<f32> + Send + Sync,
     Fi: Fn(f32, f32) -> P + Send + Sync,
 {
-    let width = out.width();
-    let raw_out = out.as_mut();
-    let pitch = P::CHANNEL_COUNT as usize * width as usize;
-    let chunks = raw_out.par_chunks_mut(pitch);
-
-    chunks.enumerate().for_each(|(y, row)| {
-        for (x, slice) in row.chunks_mut(P::CHANNEL_COUNT as usize).enumerate() {
-            // TODO: This is bad, it creates and imediately unpacks arrays...
-            let [px, py] = mapping(&array![[x as f32, y as f32]]).into_raw_vec()[..] else {
-                panic!()
-            };
-            *P::from_slice_mut(slice) = get_pixel(px, py);
+    // Points is a Nx2 array of xy pairs
+    let points = Array::from_shape_fn(((width * height) as usize, 2), |(i, j)| {
+        if j == 0 {
+            i as u32 % width
+        } else {
+            i as u32 / width
         }
     });
+
+    // Warp all points and determine indices of in-bound ones
+    let warpd = mapping.warp_points(&points);
+    let xs = warpd.column(0);
+    let ys = warpd.column(1);
+
+    // Create and return image buffer
+    let pixels = xs.iter().zip(ys).map(|(&x, &y)| get_pixel(x, y));
+    let mut out = ImageBuffer::new(width, height);
+
+    // TODO: Maybe vectorize get_pixel?
+    for ((_, _, out_p), pix) in out.enumerate_pixels_mut().zip(pixels) {
+        *out_p = pix
+    }
+
+    out
 }
 
+pub fn sample_warped_grid(
+    mapping: &Mapping,
+    data: Array2<f32>,
+    width: usize,
+    height: usize,
+    ret_valid: bool,
+) -> (Array1<f32>, Option<Array1<bool>>) {
+    // Points is a Nx2 array of xy pairs
+    let points = Array::from_shape_fn((width * height, 2), |(i, j)| {
+        if j == 0 {
+            (i % width) as u32
+        } else {
+            (i / width) as u32
+        }
+    });
+
+    // Warp all points and determine indices of in-bound ones
+    let warpd = mapping.warp_points(&points);
+    let qx = warpd.column(0);
+    let qy = warpd.column(1);
+
+    let valid = if ret_valid {
+        let [data_h, data_w] = data.shape() else {
+            unreachable!("Data is Array2, should have 2 dims!")
+        };
+        let in_range_x = |x| 0.0 <= x && x <= (*data_w as f32) - 1.0;
+        let in_range_y = |y| 0.0 <= y && y <= (*data_h as f32) - 1.0;
+        Some(Array::from_iter(
+            qx.iter()
+                .zip(qy)
+                .map(|(&x, &y)| in_range_x(x) && in_range_y(y)),
+        ))
+    } else {
+        None
+    };
+
+    let interpolator = Interp2DBuilder::new(data)
+        .strategy(Bilinear::new().allow_default(true))
+        .build()
+        .unwrap();
+    let samples = interpolator.interp_array(&qy, &qx).unwrap();
+    (samples, valid)
+}
+
+// ----------------------------------------------------------------------------
 #[cfg(test)]
 mod test_warps {
     use approx::assert_relative_eq;
@@ -327,7 +327,7 @@ mod test_warps {
             TransformationType::Projective,
         );
         let point = array![[0, 0]];
-        let warpd = map.warp_points(point);
+        let warpd = map.warp_points(&point);
         assert_relative_eq!(warpd, array![[3.56534624, 0.61332092]]);
     }
 }

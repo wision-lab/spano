@@ -12,16 +12,13 @@ use imageproc::{
 };
 
 use indicatif::{ProgressBar, ProgressStyle};
-use itertools::{izip, Itertools};
-use ndarray::{array, par_azip, s, stack, Array1, Array2, ArrayBase, Axis, NewAxis};
+use itertools::izip;
+use ndarray::{par_azip, s, stack, Array, Array1, Array2, ArrayBase, Axis, NewAxis};
 use ndarray_linalg::solve::Inverse;
 use nshare::ToNdarray2;
 use rayon::prelude::*;
 
-use crate::{
-    blend::interpolate_bilinear,
-    warps::{Mapping, TransformationType},
-};
+use crate::warps::{sample_warped_grid, Mapping, TransformationType};
 
 /// Compute image gradients using Sobel operator
 /// Returned (dx, dy) pair as HxW arrays.
@@ -47,7 +44,7 @@ pub fn iclk<P>(
 ) -> Result<(Mapping, Vec<Vec<f32>>)>
 where
     P: Pixel + Send + Sync,
-    <P as Pixel>::Subpixel: Send + Sync,
+    <P as Pixel>::Subpixel: Send + Sync + 'static,
     <P as Pixel>::Subpixel: ValueInto<f32> + From<u8> + Clamp<f32>,
     f32: ValueFrom<<P as Pixel>::Subpixel> + From<<P as Pixel>::Subpixel>,
 {
@@ -77,26 +74,30 @@ pub fn iclk_grayscale<T>(
     message: Option<&str>,
 ) -> Result<(Mapping, Vec<Vec<f32>>)>
 where
-    T: Primitive + Clamp<f32> + Send + Sync,
+    T: Primitive + Clamp<f32> + Send + Sync + 'static,
     f32: ValueFrom<T> + From<T>,
 {
     // Initialize values
     let mut params = init_mapping.inverse().get_params();
     let h = im2_gray.height().min(im1_gray.height());
     let w = im2_gray.width().min(im1_gray.width());
-    let points: Vec<(f32, f32)> = (0..h)
-        .cartesian_product(0..w)
-        .map(|(y, x)| (x as f32, y as f32))
-        .collect();
+    let points = Array::from_shape_fn(((w * h) as usize, 2), |(i, j)| {
+        if j == 0 {
+            (i as u32 % w) as f32
+        } else {
+            (i as u32 / w) as f32
+        }
+    });
+    let xs = points.column(0);
+    let ys = points.column(1);
+    let num_points = (w * h) as usize;
 
-    let sampler = |(x, y)| {
-        interpolate_bilinear(im1_gray, x, y)
-            .map(|p| p.channels().iter().map(|v| f32::from(*v)).sum())
-    };
-    let im2gray_pixels: Vec<f32> = im2_gray
-        .pixels()
-        .map(|p| p.channels().iter().map(|v| f32::from(*v)).sum())
-        .collect();
+    let img1_array = im1_gray.clone().into_ndarray2().mapv(|v| f32::from(v));
+    let im2gray_pixels = im2_gray
+        .clone()
+        .into_ndarray2()
+        .mapv(|v| f32::from(v))
+        .into_shape(num_points)?;
     let (dx, dy) = im2_grad;
 
     let mut params_history = vec![];
@@ -107,8 +108,8 @@ where
         TransformationType::Translational => {
             let steepest_descent_ic_t = stack![
                 Axis(1),
-                dx.into_shape(points.len())?,
-                dy.into_shape(points.len())?
+                dx.into_shape(num_points)?,
+                dy.into_shape(num_points)?
             ]; // (Nx2)
 
             let hessian_inv = (steepest_descent_ic_t.clone().permuted_axes([1, 0]))
@@ -123,24 +124,23 @@ where
             )
         }
         TransformationType::Affine => {
-            let mut steepest_descent_ic_t = Array2::zeros((points.len(), params.len()));
+            let mut steepest_descent_ic_t = Array2::zeros((num_points, params.len()));
 
             let jacobian_p = {
-                let (x, y): (Vec<_>, Vec<_>) = points.iter().cloned().unzip();
-                let ones: Array1<f32> = ArrayBase::ones(points.len());
-                let zeros: Array1<f32> = ArrayBase::zeros(points.len());
+                let ones: Array1<f32> = ArrayBase::ones(num_points);
+                let zeros: Array1<f32> = ArrayBase::zeros(num_points);
                 stack![
                     Axis(0),
-                    stack![Axis(0), x, zeros, y, zeros, ones, zeros],
-                    stack![Axis(0), zeros, x, zeros, y, zeros, ones]
+                    stack![Axis(0), xs, zeros, ys, zeros, ones, zeros],
+                    stack![Axis(0), zeros, xs, zeros, ys, zeros, ones]
                 ]
                 .permuted_axes([2, 0, 1])
             }; // (Nx2x6)
 
             let grad_im2 = stack![
                 Axis(2),
-                dx.into_shape((points.len(), 1))?,
-                dy.into_shape((points.len(), 1))?
+                dx.into_shape((num_points, 1))?,
+                dy.into_shape((num_points, 1))?
             ]; // (Nx1x2)
 
             // Perform the batch matrix multiply of grad_im2 @ jacobian_p
@@ -165,28 +165,47 @@ where
             )
         }
         TransformationType::Projective => {
-            let mut steepest_descent_ic_t = Array2::zeros((points.len(), params.len()));
+            let mut steepest_descent_ic_t = Array2::zeros((num_points, params.len()));
 
             // dW_dp evaluated at (x, p) and p=0 (identity transform)
             let jacobian_p = {
-                let (x, y): (Vec<_>, Vec<_>) = points.iter().cloned().unzip();
-                let ones: Array1<f32> = ArrayBase::ones(points.len());
-                let zeros: Array1<f32> = ArrayBase::zeros(points.len());
-                let minus_xx: Vec<f32> = x.iter().map(|i1| -i1 * i1).collect();
-                let minus_yy: Vec<f32> = y.iter().map(|i1| -i1 * i1).collect();
-                let minus_xy: Vec<f32> = x.iter().zip(&y).map(|(i1, i2)| -i1 * i2).collect();
+                let ones: Array1<f32> = ArrayBase::ones(num_points);
+                let zeros: Array1<f32> = ArrayBase::zeros(num_points);
+                let minus_xx: Vec<f32> = xs.iter().map(|i1| -i1 * i1).collect();
+                let minus_yy: Vec<f32> = ys.iter().map(|i1| -i1 * i1).collect();
+                let minus_xy: Vec<f32> = xs.iter().zip(&ys).map(|(i1, i2)| -i1 * i2).collect();
                 stack![
                     Axis(0),
-                    stack![Axis(0), x, zeros, y, zeros, ones, zeros, minus_xx, minus_xy],
-                    stack![Axis(0), zeros, x, zeros, y, zeros, ones, minus_xy, minus_yy]
+                    stack![
+                        Axis(0),
+                        xs,
+                        zeros,
+                        ys,
+                        zeros,
+                        ones,
+                        zeros,
+                        minus_xx,
+                        minus_xy
+                    ],
+                    stack![
+                        Axis(0),
+                        zeros,
+                        xs,
+                        zeros,
+                        ys,
+                        zeros,
+                        ones,
+                        minus_xy,
+                        minus_yy
+                    ]
                 ]
                 .permuted_axes([2, 0, 1])
             }; // (Nx2x8)
 
             let grad_im2 = stack![
                 Axis(2),
-                dx.into_shape((points.len(), 1))?,
-                dy.into_shape((points.len(), 1))?
+                dx.into_shape((num_points, 1))?,
+                dy.into_shape((num_points, 1))?
             ]; // (Nx1x2)
 
             // Perform the batch matrix multiply of grad_im2 @ jacobian_p
@@ -233,29 +252,25 @@ where
     for i in 0..max_iters.unwrap_or(250) {
         pbar.set_position(i as u64);
 
-        // Create mapping from params and use it to warp all points
+        // Create mapping from params and use it to sample points from img1
         let mapping = Mapping::from_params(&params);
-
-        // TODO: This is bad, it creates and imediately unpacks arrays...
-        let warped_points = points.par_iter().map(|&(x, y)| {
-            let [x_, y_] = mapping.warp_points(array![[x, y]]).into_raw_vec()[..] else {
-                panic!()
-            };
-            (x_, y_)
-        });
-        let warped_im1gray_pixels: Vec<Option<f32>> = warped_points.map(sampler).collect();
+        let (warped_im1gray_pixels, valid) =
+            sample_warped_grid(&mapping, img1_array.clone(), w as usize, h as usize, true);
 
         // Calculate parameter update dp
         let dp: Array2<f32> = hessian_inv.dot(
             &(
                 steepest_descent_ic_t.axis_iter(Axis(0)),
-                &warped_im1gray_pixels,
-                &im2gray_pixels,
+                warped_im1gray_pixels.to_vec(),
+                im2gray_pixels.to_vec(),
+                valid.unwrap().to_vec(),
             )
-                // Zip together all three iterators
+                // Zip together all three iterators and valid flag
                 .into_par_iter()
-                // Drop them if the warped value from is None (i.e: out-of-bounds)
-                .filter_map(|(sd, p1_opt, p2)| p1_opt.map(|p1| sd.to_owned() * (p1 - p2)))
+                // Drop them if the warped value from is out-of-bounds
+                .filter(|(_, _, _, is_valid)| *is_valid)
+                // Calculate parameter update according to formula
+                .map(|(sd, p1, p2, _)| sd.to_owned() * (p1 - p2))
                 // Sum them together, here we use reduce with a base value of zero
                 .reduce(|| Array2::<f32>::zeros((params.len(), 1)), |a, b| a + b),
         );
@@ -325,10 +340,7 @@ where
         // Re-normalize mapping to scale of next level of pyramid
         // But not on last iteration (since we're already at full scale)
         if i + 1 < num_lvls {
-            mapping = mapping.transform(
-                Some(Mapping::scale(2.0, 2.0)),
-                Some(Mapping::scale(0.5, 0.5)),
-            );
+            mapping = mapping.rescale(0.5);
         }
 
         // Save level's param history
