@@ -13,12 +13,14 @@ use imageproc::{
 
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::izip;
-use ndarray::{par_azip, s, stack, Array, Array1, Array2, ArrayBase, Axis, NewAxis};
+use ndarray::{
+    array, par_azip, s, stack, Array, Array1, Array2, Array3, ArrayBase, ArrayView, Axis, NewAxis,
+};
 use ndarray_linalg::solve::Inverse;
-use nshare::ToNdarray2;
+use nshare::{ToNdarray2, ToNdarray3};
 use rayon::prelude::*;
 
-use crate::warps::{sample_warped_grid, Mapping, TransformationType};
+use crate::warps::{warp_array3_into, Mapping, TransformationType};
 
 /// Compute image gradients using Sobel operator
 /// Returned (dx, dy) pair as HxW arrays.
@@ -83,21 +85,23 @@ where
     let w = im2_gray.width().min(im1_gray.width());
     let points = Array::from_shape_fn(((w * h) as usize, 2), |(i, j)| {
         if j == 0 {
-            (i as u32 % w) as f32
+            i % w as usize
         } else {
-            (i as u32 / w) as f32
+            i / w as usize
         }
     });
-    let xs = points.column(0);
-    let ys = points.column(1);
+    let xs = points.column(0).mapv(|v| v as f32);
+    let ys = points.column(1).mapv(|v| v as f32);
     let num_points = (w * h) as usize;
 
-    let img1_array = im1_gray.clone().into_ndarray2().mapv(|v| f32::from(v));
-    let im2gray_pixels = im2_gray
+    let img1_array = im1_gray.clone().into_ndarray3().mapv(|v| f32::from(v));
+    let img2_pixels = im2_gray
         .clone()
-        .into_ndarray2()
+        .into_ndarray3()
         .mapv(|v| f32::from(v))
-        .into_shape(num_points)?;
+        .into_shape((1, num_points))?;
+    let mut warped_im1gray_pixels = Array3::<f32>::zeros((1, h as usize, w as usize));
+    let mut valid = Array2::<bool>::from_elem((h as usize, w as usize), false);
     let (dx, dy) = im2_grad;
 
     let mut params_history = vec![];
@@ -254,23 +258,35 @@ where
 
         // Create mapping from params and use it to sample points from img1
         let mapping = Mapping::from_params(&params);
-        let (warped_im1gray_pixels, valid) =
-            sample_warped_grid(&mapping, img1_array.clone(), w as usize, h as usize, true);
+        warp_array3_into(
+            &mapping,
+            &img1_array,
+            &mut warped_im1gray_pixels,
+            &mut valid,
+            Some(&points),
+            Some(array![0.0]),
+        );
+
+        let warped_im1gray_pixels_view =
+            ArrayView::from_shape((1, num_points), warped_im1gray_pixels.as_slice().unwrap())
+                .unwrap();
+
+        let valid_view = ArrayView::from_shape(num_points, valid.as_slice().unwrap()).unwrap();
 
         // Calculate parameter update dp
         let dp: Array2<f32> = hessian_inv.dot(
             &(
                 steepest_descent_ic_t.axis_iter(Axis(0)),
-                warped_im1gray_pixels.to_vec(),
-                im2gray_pixels.to_vec(),
-                valid.unwrap().to_vec(),
+                warped_im1gray_pixels_view.axis_iter(Axis(1)),
+                img2_pixels.axis_iter(Axis(1)),
+                valid_view.axis_iter(Axis(0)),
             )
                 // Zip together all three iterators and valid flag
                 .into_par_iter()
                 // Drop them if the warped value from is out-of-bounds
-                .filter(|(_, _, _, is_valid)| *is_valid)
+                .filter(|(_, _, _, is_valid)| is_valid.iter().all(|i| *i))
                 // Calculate parameter update according to formula
-                .map(|(sd, p1, p2, _)| sd.to_owned() * (p1 - p2))
+                .map(|(sd, p1, p2, _)| sd.to_owned() * (p1.to_owned() - p2.to_owned()).sum())
                 // Sum them together, here we use reduce with a base value of zero
                 .reduce(|| Array2::<f32>::zeros((params.len(), 1)), |a, b| a + b),
         );

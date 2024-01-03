@@ -7,7 +7,7 @@ use image::{io::Reader as ImageReader, ImageBuffer, Rgb};
 use image::{GrayImage, Luma};
 use indicatif::{ProgressIterator, ProgressStyle};
 use itertools::Itertools;
-use ndarray::{array, Array, Array2, Axis, Slice};
+use ndarray::{array, Array, Array2, Array3, Axis, Slice};
 use nshare::{ToNdarray2, ToNdarray3};
 use rayon::iter::{
     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
@@ -25,16 +25,16 @@ mod transforms;
 mod utils;
 mod warps;
 
-use blend::{interpolate_bilinear_with_bkg, polygon_sdf_vec};
+use blend::interpolate_bilinear_with_bkg;
 use cli::{Cli, Commands, LKArgs, Parser};
 use ffmpeg::make_video;
 use io::PhotonCube;
 use lk::{gradients, hierarchical_iclk, iclk, iclk_grayscale};
 use transforms::{array2grayimage, process_colorspad, unpack_single};
 use utils::{animate_hierarchical_warp, animate_warp};
-use warps::{sample_warped_grid, warp_image, Mapping, TransformationType};
+use warps::{warp_array3, warp_image, Mapping, TransformationType};
 
-use crate::blend::distance_transform;
+use crate::blend::{distance_transform, polygon_distance_transform};
 use crate::transforms::apply_transform;
 
 fn print_type_of<T>(_: &T) {
@@ -120,7 +120,7 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
     };
 
     let get_pixel = |x, y| interpolate_bilinear_with_bkg(&img2, x, y, Rgb([128, 0, 0]));
-    let out = warp_image(&mapping, get_pixel, w, h);
+    let out = warp_image(&mapping, get_pixel, w as usize, h as usize);
     out.save(global_args.output.unwrap_or("out.png".to_string()))?;
 
     println!("{:#?}", &mapping.mat);
@@ -154,12 +154,13 @@ fn main() -> Result<()> {
 
             // Warp with warp_image: Slower but no jaggies
             let get_pixel = |x, y| interpolate_bilinear_with_bkg(&img, x, y, Rgb([128, 0, 0]));
-            let out = warp_image(&map, get_pixel, w, h);
+            let out = warp_image(&map, get_pixel, w as usize, h as usize);
             out.save("out1.png")?;
 
             // Warp with sample_warped_grid: faster but single channel and jaggies
-            let data = grayscale(&img).into_ndarray2().mapv(|v| v as f32);
-            let (out, _) = sample_warped_grid(&map, data, w as usize, h as usize, false);
+            let data = grayscale(&img).into_ndarray3().mapv(|v| v as f32);
+            println!("{:?}", data.shape());
+            let out = warp_array3(&map, &data, (1, h as usize, w as usize), array![0.0]);
             let out = array2grayimage(out.mapv(|v| v as u8).into_shape((h as usize, w as usize))?);
             out.save("out2.png")?;
             Ok(())
@@ -172,7 +173,7 @@ fn main() -> Result<()> {
             let burst_size = 256;
 
             // Create parallel iterator over all chunks of frames and process them
-            let (virtual_exposures, mut sizes): (Vec<_>, Vec<(u32, u32)>) = cube_view
+            let (virtual_exposures, mut sizes): (Vec<_>, Vec<_>) = cube_view
                 .axis_chunks_iter(Axis(0), burst_size)
                 // Make it parallel
                 .into_par_iter()
@@ -197,10 +198,10 @@ fn main() -> Result<()> {
                         FilterType::CatmullRom,
                     );
                     let img = apply_transform(img, &args.transform);
-                    let (w, h) = (img.width(), img.height());
+                    let (w, h) = (img.width() as usize, img.height() as usize);
                     (img, (w, h))
                 })
-                // Force iteratpor to run to completion to get correct ordering
+                // Force iterator to run to completion to get correct ordering
                 .unzip();
 
             // Estimate pairwise registration
@@ -217,7 +218,7 @@ fn main() -> Result<()> {
                         src,                             // im1_gray
                         dst,                             // im2_gray
                         gradients(dst),                  // im2_grad,
-                        Mapping::from_params(&[0.0; 8]), // init_mapping
+                        Mapping::from_params(&[0.0; 2]), // init_mapping
                         Some(lk_args.iterations),        // max_iters
                         Some(lk_args.early_stop),        // stop_early
                         None,                            // message
@@ -254,7 +255,7 @@ fn main() -> Result<()> {
 
             // Validate all shapes are equal
             sizes = sizes.into_iter().unique().collect();
-            let [size]: [(u32, u32)] = sizes[..] else {
+            let [size]: [(usize, usize)] = sizes[..] else {
                 return Err(anyhow!(
                     "Expected all frames to have same shapes but found shapes: {sizes:#?}"
                 ));
@@ -266,23 +267,18 @@ fn main() -> Result<()> {
             println!("{:}, {:}, {:?}", &canvas_w, &canvas_h, &offset);
 
             for (i, map) in mappings.iter().step_by(args.viz_step).enumerate() {
-                let corners = map.transform(None, Some(offset.clone())).corners(size);
-                let weights = distance_transform(
-                    &corners,
-                    (canvas_h.ceil() as usize, canvas_w.ceil() as usize),
+                let get_pixel =
+                    |x, y| interpolate_bilinear_with_bkg(&virtual_exposures[i], x, y, Luma([128]));
+                let img = warp_image(
+                    &map.transform(None, Some(offset.clone())),
+                    get_pixel,
+                    canvas_w.ceil() as usize,
+                    canvas_h.ceil() as usize,
                 );
-                let img = array2grayimage(weights.mapv(|v| (v * 255.0).round() as u8));
-
-                // ------------------------------------------------------------
-
-                // let get_pixel =
-                //     |x, y| interpolate_bilinear_with_bkg(&virtual_exposures[i], x, y, Luma([128]));
-                // let img = warp_image(
-                //     &map.transform(None, Some(offset.clone())),
-                //     get_pixel,
-                //     canvas_w.ceil() as u32,
-                //     canvas_h.ceil() as u32,
-                // );
+                // let img = polygon_distance_transform(
+                //     &map.corners(size), (canvas_h.ceil() as usize, canvas_w.ceil() as usize)
+                // ).mapv(|v| (v*255.0).round() as u8);
+                // let img = array2grayimage(img);
 
                 let path = Path::new(&"tmp/".to_string()).join(format!("frame{:06}.png", i));
                 img.save(&path)
@@ -294,11 +290,14 @@ fn main() -> Result<()> {
                     .join("frame%06d.png")
                     .to_str()
                     .unwrap(),
-                "out.mp4",
+                &args.viz_output.unwrap_or("out.mp4".to_string()),
                 25u64,
                 0,
                 None,
             );
+
+            // let canvas = Array3::<f32>::zeros((canvas_h.ceil() as usize, canvas_w.ceil() as usize, 2));
+            // let weights = distance_transform((canvas_h.ceil() as usize, canvas_w.ceil() as usize));
 
             // let raw_pano = ImageBuffer::<Luma<f32>, Vec<f32>>::new(canvas_w.ceil() as u32, canvas_h.ceil() as u32);
             // let weights = ImageBuffer::<Luma<f32>, Vec<f32>>::new(canvas_w.ceil() as u32, canvas_h.ceil() as u32);

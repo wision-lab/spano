@@ -3,14 +3,12 @@ use std::ops::DivAssign;
 use conv::ValueInto;
 use image::{ImageBuffer, Pixel};
 use imageproc::definitions::{Clamp, Image};
-use ndarray::{array, concatenate, s, Array1, Array2, Axis};
+use ndarray::{array, concatenate, s, Array1, Array2, Array3, ArrayViewMut, Axis};
 use ndarray::{stack, Array};
-use ndarray_interp::{
-    interp1d::{CubicSpline, Interp1DBuilder},
-    interp2d::{Bilinear, Interp2DBuilder},
-};
+use ndarray_interp::interp1d::{CubicSpline, Interp1DBuilder};
 use ndarray_linalg::solve::Inverse;
 use num_traits::AsPrimitive;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 #[derive(Copy, Clone, Debug)]
 pub enum TransformationType {
@@ -163,13 +161,13 @@ impl Mapping {
         )
     }
 
-    pub fn corners(&self, size: (u32, u32)) -> Array2<f32> {
+    pub fn corners(&self, size: (usize, usize)) -> Array2<f32> {
         let (w, h) = size;
         let corners = array![[0, 0], [w, 0], [w, h], [0, h]];
         self.inverse().warp_points(&corners)
     }
 
-    pub fn extent(&self, size: (u32, u32)) -> (Array1<f32>, Array1<f32>) {
+    pub fn extent(&self, size: (usize, usize)) -> (Array1<f32>, Array1<f32>) {
         let corners = self.corners(size);
         let min_coords = corners.map_axis(Axis(0), |view| {
             view.iter().fold(f32::INFINITY, |a, b| a.min(*b))
@@ -180,7 +178,7 @@ impl Mapping {
         (min_coords, max_coords)
     }
 
-    pub fn maximum_extent(maps: &[Self], size: (u32, u32)) -> (Array1<f32>, Self) {
+    pub fn maximum_extent(maps: &[Self], size: (usize, usize)) -> (Array1<f32>, Self) {
         let (min_coords, max_coords): (Vec<Array1<f32>>, Vec<Array1<f32>>) =
             maps.iter().map(|m| m.extent(size)).unzip();
 
@@ -231,7 +229,7 @@ impl Mapping {
     }
 }
 
-pub fn warp_image<P, Fi>(mapping: &Mapping, get_pixel: Fi, width: u32, height: u32) -> Image<P>
+pub fn warp_image<P, Fi>(mapping: &Mapping, get_pixel: Fi, width: usize, height: usize) -> Image<P>
 where
     P: Pixel,
     <P as Pixel>::Subpixel: Send + Sync,
@@ -239,11 +237,11 @@ where
     Fi: Fn(f32, f32) -> P + Send + Sync,
 {
     // Points is a Nx2 array of xy pairs
-    let points = Array::from_shape_fn(((width * height) as usize, 2), |(i, j)| {
+    let points = Array::from_shape_fn((width * height, 2), |(i, j)| {
         if j == 0 {
-            i as u32 % width
+            i % width
         } else {
-            i as u32 / width
+            i / width
         }
     });
 
@@ -254,7 +252,7 @@ where
 
     // Create and return image buffer
     let pixels = xs.iter().zip(ys).map(|(&x, &y)| get_pixel(x, y));
-    let mut out = ImageBuffer::new(width, height);
+    let mut out = ImageBuffer::new(width as u32, height as u32);
 
     // TODO: Maybe vectorize get_pixel?
     for ((_, _, out_p), pix) in out.enumerate_pixels_mut().zip(pixels) {
@@ -264,49 +262,175 @@ where
     out
 }
 
-pub fn sample_warped_grid(
+pub fn warp_array3(
     mapping: &Mapping,
-    data: Array2<f32>,
-    width: usize,
-    height: usize,
-    ret_valid: bool,
-) -> (Array1<f32>, Option<Array1<bool>>) {
-    // Points is a Nx2 array of xy pairs
-    let points = Array::from_shape_fn((width * height, 2), |(i, j)| {
-        if j == 0 {
-            (i % width) as u32
-        } else {
-            (i / width) as u32
-        }
-    });
+    data: &Array3<f32>,
+    out_size: (usize, usize, usize),
+    background: Array1<f32>,
+) -> Array3<f32> {
+    let (_, h, w) = out_size;
+    let mut out = Array3::zeros(out_size);
+    let mut valid = Array2::from_elem((h, w), false);
+    warp_array3_into(mapping, data, &mut out, &mut valid, None, Some(background));
+    out
+}
 
-    // Warp all points and determine indices of in-bound ones
-    let warpd = mapping.warp_points(&points);
-    let qx = warpd.column(0);
-    let qy = warpd.column(1);
-
-    let valid = if ret_valid {
-        let [data_h, data_w] = data.shape() else {
-            unreachable!("Data is Array2, should have 2 dims!")
-        };
-        let in_range_x = |x| 0.0 <= x && x <= (*data_w as f32) - 1.0;
-        let in_range_y = |y| 0.0 <= y && y <= (*data_h as f32) - 1.0;
-        Some(Array::from_iter(
-            qx.iter()
-                .zip(qy)
-                .map(|(&x, &y)| in_range_x(x) && in_range_y(y)),
-        ))
-    } else {
-        None
+pub fn warp_array3_into(
+    mapping: &Mapping,
+    data: &Array3<f32>,
+    out: &mut Array3<f32>,
+    valid: &mut Array2<bool>,
+    points: Option<&Array2<usize>>,
+    background: Option<Array1<f32>>,
+) {
+    let [out_c, out_h, out_w] = out.shape() else {
+        unreachable!("Data is Array3, should have 3 dims!")
+    };
+    let [_data_c, data_h, data_w] = data.shape() else {
+        unreachable!("Data is Array3, should have 3 dims!")
     };
 
-    let interpolator = Interp2DBuilder::new(data)
-        .strategy(Bilinear::new().allow_default(true))
-        .build()
-        .unwrap();
-    let samples = interpolator.interp_array(&qy, &qx).unwrap();
-    (samples, valid)
+    // Points is a Nx2 array of xy pairs
+    let num_points = out_w * out_h;
+    let points_: Array2<usize>;
+    let points = if let Some(pts) = points {
+        pts
+    } else {
+        points_ = Array::from_shape_fn(
+            (num_points, 2),
+            |(i, j)| {
+                if j == 0 {
+                    i % out_w
+                } else {
+                    i / out_w
+                }
+            },
+        );
+        &points_
+    };
+
+    // Warp all points and determine indices of in-bound ones
+    let (background, padding) = if let Some(bkg) = background {
+        (bkg, 1.0)
+    } else {
+        (Array1::<f32>::zeros(*out_c), 0.0)
+    };
+    let warpd = mapping.warp_points(points);
+    let in_range_x = |x: f32| -padding <= x && x <= (*data_w as f32) - 1.0 + padding;
+    let in_range_y = |y: f32| -padding <= y && y <= (*data_h as f32) - 1.0 + padding;
+    let left_top = warpd.mapv(|v| v.floor());
+    let right_bottom = left_top.mapv(|v| v + 1.0);
+    let right_bottom_weights = &warpd - &left_top;
+
+    // Perform interpolation into buffer
+    let get_pix_or_bkg = |x: f32, y: f32| {
+        if x < 0f32 || x >= *data_w as f32 || y < 0f32 || y >= *data_h as f32 {
+            background.to_owned()
+        } else {
+            data.slice(s![.., y as i32, x as i32]).to_owned()
+        }
+    };
+
+    let mut out_view =
+        ArrayViewMut::from_shape((*out_c, out_h * out_w), out.as_slice_mut().unwrap()).unwrap();
+
+    let mut valid_view =
+        ArrayViewMut::from_shape(num_points, valid.as_slice_mut().unwrap()).unwrap();
+
+    (
+        out_view.axis_iter_mut(Axis(1)),
+        valid_view.axis_iter_mut(Axis(0)),
+        points.axis_iter(Axis(0)),
+        warpd.axis_iter(Axis(0)),
+        left_top.axis_iter(Axis(0)),
+        right_bottom.axis_iter(Axis(0)),
+        right_bottom_weights.axis_iter(Axis(0)),
+    )
+        .into_par_iter()
+        .for_each(
+            |(mut out_slice, mut valid_slice, _dst_p, src_p, lt, rb, rb_w)| {
+                let [src_x, src_y] = src_p.to_vec()[..] else {
+                    unreachable!("XY pair has only two values")
+                };
+
+                if !in_range_x(src_x) || !in_range_y(src_y) {
+                    valid_slice.fill(false);
+                    return;
+                }
+
+                let [l, t] = lt.to_vec()[..] else {
+                    unreachable!("XY pair has only two values")
+                };
+                let [r, b] = rb.to_vec()[..] else {
+                    unreachable!("XY pair has only two values")
+                };
+                let [rw, bw] = rb_w.to_vec()[..] else {
+                    unreachable!("XY pair has only two values")
+                };
+
+                // Do the interpolation
+                let (tl, tr, bl, br) = (
+                    get_pix_or_bkg(l, t),
+                    get_pix_or_bkg(r, t),
+                    get_pix_or_bkg(l, b),
+                    get_pix_or_bkg(r, b),
+                );
+                let top = (1.0 - rw) * tl + rw * tr;
+                let bottom = (1.0 - rw) * bl + rw * br;
+                let value = (1.0 - bw) * top + bw * bottom;
+                out_slice.assign(&value);
+                valid_slice.fill(true);
+            },
+        );
 }
+
+// pub fn interpolate_bilinear_array3d(
+//     data: &Array3<f32>, points: Array2<f32>, background: Array1<f32>
+// ) -> Array2<f32> {
+//     let [data_h, data_w, _data_c] = data.shape() else {
+//         unreachable!("Data is Array3, should have 3 dims!")
+//     };
+
+//     let get_pix_or_bkg = |x: f32, y: f32| {
+//         if x < 0f32 || x >= *data_w as f32 || y < 0f32 || y >= *data_h as f32 {
+//             background.to_owned()
+//         } else {
+//             data.slice(s![x as i32, y as i32, ..]).to_owned()
+//         }
+//     };
+
+//     let left_top = points.mapv(|v| v.floor());
+//     let right_bottom = left_top.mapv(|v| v + 1.0);
+//     let right_bottom_weights = points - &left_top;
+
+//     let out: Vec<_> = (
+//         left_top.axis_iter(Axis(0)),
+//         right_bottom.axis_iter(Axis(0)),
+//         right_bottom_weights.axis_iter(Axis(0))
+//     ).into_par_iter().map(|(lt, rb, rb_w)| {
+//         let [l, t] = lt.to_vec()[..] else {unreachable!("XY pair has only two values")};
+//         let [r, b] = rb.to_vec()[..] else {unreachable!("XY pair has only two values")};
+//         let [rw, bw] = rb_w.to_vec()[..] else {unreachable!("XY pair has only two values")};
+
+//         // Do the interpolation
+//         let (tl, tr, bl, br) = (
+//             get_pix_or_bkg(l, t),
+//             get_pix_or_bkg(r, t),
+//             get_pix_or_bkg(l, b),
+//             get_pix_or_bkg(r, b),
+//         );
+//         let top = (1.0 - rw) * tl + rw * tr;
+//         let bottom = (1.0 - rw) * bl + rw * br;
+//         let value = (1.0 - bw) * top + bw * bottom;
+//         value
+//     }).collect();
+//     println!("..........................................................................");
+
+//     stack(
+//         Axis(0),
+//         &out.iter().map(|v| v.view()).collect::<Vec<_>>()[..]
+//     ).unwrap()
+// }
 
 // ----------------------------------------------------------------------------
 #[cfg(test)]

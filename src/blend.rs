@@ -4,7 +4,10 @@ use imageproc::{
     definitions::{Clamp, Image},
     math::cast,
 };
-use ndarray::{array, s, Array2};
+use ndarray::{azip, s, stack, Array, Array1, Array2, Axis};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
+
+use crate::Mapping;
 
 /// Again, this is almost lifted verbatum from:
 ///     https://docs.rs/imageproc/0.23.0/src/imageproc/geometric_transformations.rs.html#681
@@ -107,51 +110,78 @@ where
     })
 }
 
-/// Computes normalized and clipped distance transform (bwdist)
-pub fn distance_transform(corners: &Array2<f32>, size: (usize, usize)) -> Array2<f32> {
-    let dst = polygon_sdf_vec(corners);
-    let mut weights = Array2::from_shape_fn(size, |(y, x)| {
-        let dist = -dst(x as f32, y as f32);
-        dist.max(0.0)
+/// Computes normalized and clipped distance transform (bwdist) for rectangle that fills image
+pub fn distance_transform(size: (usize, usize)) -> Array2<f32> {
+    polygon_distance_transform(&Mapping::identity().corners(size), size)
+}
+
+/// Computes normalized and clipped distance transform (bwdist) for arbitray polygon
+pub fn polygon_distance_transform(corners: &Array2<f32>, size: (usize, usize)) -> Array2<f32> {
+    // Points is a Nx2 array of xy pairs
+    let (height, width) = size;
+    let points = Array::from_shape_fn((width * height, 2), |(i, j)| {
+        if j == 0 {
+            (i % width) as f32
+        } else {
+            (i / width) as f32
+        }
     });
+    let mut weights = -polygon_sdf(&points, corners);
     let max = weights.fold(-f32::INFINITY, |a, b| a.max(*b));
     weights.mapv_inplace(|v| v / max);
-
-    weights
+    weights.into_shape(size).unwrap()
 }
 
 /// Akin to the distance transform used by opencv or bwdist in MATLB but much more general.
-pub fn polygon_sdf_vec(vertices: &Array2<f32>) -> impl Fn(f32, f32) -> f32 + '_ {
+pub fn polygon_sdf(points: &Array2<f32>, vertices: &Array2<f32>) -> Array1<f32> {
     // Adapted from: https://www.shadertoy.com/view/wdBXRW
 
-    move |x: f32, y: f32| {
-        let num = vertices.shape()[0];
-        let point = array![x, y];
-        let mut d = (vertices.slice(s![0, ..]).to_owned() - &point)
-            .mapv(|v| v * v)
-            .sum();
-        let mut s = 1.0;
+    let num_points = points.shape()[0];
+    let num_vertices = vertices.shape()[0];
 
-        for i in 0..num {
-            let j = if i == 0 { num - 1 } else { i - 1 };
-            let e = vertices.slice(s![j, ..]).to_owned() - vertices.slice(s![i, ..]).to_owned();
-            let w = &point - vertices.slice(s![i, ..]).to_owned();
-            let b = &w - &e * (w.dot(&e) / e.dot(&e)).clamp(0.0, 1.0);
-            d = d.min(b.dot(&b));
+    let mut d: Array1<f32> = (points - vertices.slice(s![0, ..]).to_owned())
+        .mapv(|v| v * v)
+        .sum_axis(Axis(1));
+    let mut s = Array1::<f32>::ones(num_points);
 
-            let cond: u8 = [
-                y >= vertices[(i, 1)],
-                y < vertices[(j, 1)],
-                e[0] * w[1] > e[1] * w[0],
-            ]
-            .map(|i| i as u8)
-            .iter()
-            .sum();
+    for i in 0..num_vertices {
+        // distances
+        let j = if i == 0 { num_vertices - 1 } else { i - 1 };
+        let e = vertices.slice(s![j, ..]).to_owned() - vertices.slice(s![i, ..]).to_owned();
+        let w = points - vertices.slice(s![i, ..]).to_owned();
 
-            if (cond == 0) || (cond == 3) {
-                s = -s;
-            }
-        }
-        s * d.sqrt()
+        let mut weights = (&w * &e).sum_axis(Axis(1)) / (e.dot(&e));
+        weights.mapv_inplace(|v| v.clamp(0.0, 1.0));
+
+        let ew = stack![Axis(0), &weights * e[0], &weights * e[1]];
+        let b = &w - &ew.t();
+        azip!((di in &mut d, bi in b.rows()) *di = di.min(bi.dot(&bi)));
+
+        // winding number from http://geomalgorithms.com/a03-_inclusion.html
+        let cond = Array1::from_vec(
+            (
+                points
+                    .slice(s![.., 1])
+                    .mapv(|v| v >= vertices[(i, 1)])
+                    .to_vec(),
+                points
+                    .slice(s![.., 1])
+                    .mapv(|v| v < vertices[(j, 1)])
+                    .to_vec(),
+                (
+                    (&e.slice(s![0]).to_owned() * &w.slice(s![.., 1]).to_owned()).to_vec(),
+                    (&e.slice(s![1]).to_owned() * &w.slice(s![.., 0]).to_owned()).to_vec(),
+                )
+                    .into_par_iter()
+                    .map(|(a, b)| a > b)
+                    .collect::<Vec<_>>(),
+            )
+                .into_par_iter()
+                .map(|(c1, c2, c3)| (!c1 & !c2 & !c3) | (c1 & c2 & c3))
+                .collect(),
+        );
+        azip!((si in &mut s, ci in &cond) *si = if *ci {-*si} else {*si});
     }
+
+    s * d.mapv(|v| v.sqrt())
 }

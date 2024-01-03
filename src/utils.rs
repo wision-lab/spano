@@ -54,8 +54,8 @@ pub fn animate_warp(
         let out = warp_image(
             &Mapping::from_params(params).inverse().rescale(1.0 / scale),
             get_pixel,
-            w,
-            h,
+            w as usize,
+            h as usize,
         );
 
         let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
@@ -112,8 +112,8 @@ pub fn animate_hierarchical_warp(
             let mut out = warp_image(
                 &Mapping::from_params(params).inverse().rescale(1.0 / scale),
                 get_pixel,
-                w,
-                h,
+                w as usize,
+                h as usize,
             );
             annotate(&mut out, &format!("Scale: 1/{:.2}", scale));
 
