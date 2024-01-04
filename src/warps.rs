@@ -384,53 +384,6 @@ pub fn warp_array3_into(
         );
 }
 
-// pub fn interpolate_bilinear_array3d(
-//     data: &Array3<f32>, points: Array2<f32>, background: Array1<f32>
-// ) -> Array2<f32> {
-//     let [data_h, data_w, _data_c] = data.shape() else {
-//         unreachable!("Data is Array3, should have 3 dims!")
-//     };
-
-//     let get_pix_or_bkg = |x: f32, y: f32| {
-//         if x < 0f32 || x >= *data_w as f32 || y < 0f32 || y >= *data_h as f32 {
-//             background.to_owned()
-//         } else {
-//             data.slice(s![x as i32, y as i32, ..]).to_owned()
-//         }
-//     };
-
-//     let left_top = points.mapv(|v| v.floor());
-//     let right_bottom = left_top.mapv(|v| v + 1.0);
-//     let right_bottom_weights = points - &left_top;
-
-//     let out: Vec<_> = (
-//         left_top.axis_iter(Axis(0)),
-//         right_bottom.axis_iter(Axis(0)),
-//         right_bottom_weights.axis_iter(Axis(0))
-//     ).into_par_iter().map(|(lt, rb, rb_w)| {
-//         let [l, t] = lt.to_vec()[..] else {unreachable!("XY pair has only two values")};
-//         let [r, b] = rb.to_vec()[..] else {unreachable!("XY pair has only two values")};
-//         let [rw, bw] = rb_w.to_vec()[..] else {unreachable!("XY pair has only two values")};
-
-//         // Do the interpolation
-//         let (tl, tr, bl, br) = (
-//             get_pix_or_bkg(l, t),
-//             get_pix_or_bkg(r, t),
-//             get_pix_or_bkg(l, b),
-//             get_pix_or_bkg(r, b),
-//         );
-//         let top = (1.0 - rw) * tl + rw * tr;
-//         let bottom = (1.0 - rw) * bl + rw * br;
-//         let value = (1.0 - bw) * top + bw * bottom;
-//         value
-//     }).collect();
-//     println!("..........................................................................");
-
-//     stack(
-//         Axis(0),
-//         &out.iter().map(|v| v.view()).collect::<Vec<_>>()[..]
-//     ).unwrap()
-// }
 
 // ----------------------------------------------------------------------------
 #[cfg(test)]

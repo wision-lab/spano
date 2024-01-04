@@ -1,10 +1,10 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use image::{io::Reader as ImageReader, Rgb};
 
-use ndarray::array;
+use ndarray::{array, Array3, Array2};
 use nshare::ToNdarray3;
 use spano::{
-    distance_transform, interpolate_bilinear_with_bkg, warp_array3, warp_image, Mapping,
+    distance_transform, interpolate_bilinear_with_bkg, warp_array3_into, warp_image, Mapping,
     TransformationType,
 };
 
@@ -34,7 +34,7 @@ pub fn benchmark_warp_image(c: &mut Criterion) {
     });
 }
 
-pub fn benchmark_warp_array3(c: &mut Criterion) {
+pub fn benchmark_warp_array3_into(c: &mut Criterion) {
     let img = ImageReader::open("madison1.png")
         .unwrap()
         .decode()
@@ -56,14 +56,12 @@ pub fn benchmark_warp_array3(c: &mut Criterion) {
     )
     .rescale(1.0 / 16.0);
 
-    c.bench_function("warp_array3", |b| {
+    let mut out = Array3::zeros((3, h as usize, w as usize));
+    let mut valid = Array2::from_elem((h as usize, w as usize), false);
+
+    c.bench_function("warp_array3_into", |b| {
         b.iter(|| {
-            warp_array3(
-                &map,
-                &arr,
-                (3, w as usize, h as usize),
-                array![0.0, 0.0, 0.0],
-            );
+            warp_array3_into(&map, &arr, &mut out, &mut valid, None, Some(array![0.0, 0.0, 0.0]));
         })
     });
 }
@@ -79,7 +77,7 @@ pub fn benchmark_distance_transform(c: &mut Criterion) {
 criterion_group!(
     benches,
     // benchmark_warp_image,
-    benchmark_warp_array3,
+    benchmark_warp_array3_into,
     // benchmark_distance_transform
 );
 criterion_main!(benches);
