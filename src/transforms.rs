@@ -9,7 +9,7 @@ use image::{imageops, ImageBuffer, Luma, Pixel, Rgb, RgbImage};
 use imageproc::drawing::{draw_text_mut, text_size};
 use imageproc::map::map_pixels;
 
-use ndarray::{s, Array, Array2, ArrayView2, Axis, Slice};
+use ndarray::{s, Array, Array2, ArrayView2, Axis, Slice, Array3};
 use ndarray_stats::{interpolate::Linear, QuantileExt};
 use noisy_float::types::n64;
 use num_traits::AsPrimitive;
@@ -61,6 +61,17 @@ pub fn array2rgbimage(frame: Array2<u8>) -> RgbImage {
 
     // Convert it to rgb by duplicating each pixel
     map_pixels(&img, |_x, _y, p| Rgb([p[0], p[0], p[0]]))
+}
+
+pub fn array_to_image(arr: Array3<u8>) -> RgbImage {
+    let arr = arr.permuted_axes((1, 2, 0)).as_standard_layout().to_owned();
+    assert!(arr.is_standard_layout());
+
+    let (height, width, _) = arr.dim();
+    let raw = arr.into_raw_vec();
+
+    RgbImage::from_raw(width as u32, height as u32, raw)
+        .expect("container should have the right size for the image dimensions")
 }
 
 pub fn annotate(frame: &mut RgbImage, text: &str) {

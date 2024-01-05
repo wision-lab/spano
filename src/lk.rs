@@ -265,6 +265,7 @@ where
             &mut valid,
             Some(&points),
             Some(array![0.0]),
+            None,
         );
 
         let warped_im1gray_pixels_view =

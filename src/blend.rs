@@ -12,46 +12,6 @@ use crate::Mapping;
 /// Again, this is almost lifted verbatum from:
 ///     https://docs.rs/imageproc/0.23.0/src/imageproc/geometric_transformations.rs.html#681
 /// But alas, this function is not declared as public so we can't just import it...
-pub fn interpolate_bilinear<P>(image: &Image<P>, x: f32, y: f32) -> Option<P>
-where
-    P: Pixel,
-    <P as Pixel>::Subpixel: ValueInto<f32> + Clamp<f32>,
-{
-    let left = x.floor();
-    let right = left + 1f32;
-    let top = y.floor();
-    let bottom = top + 1f32;
-
-    let right_weight = x - left;
-    let bottom_weight = y - top;
-
-    let (width, height) = image.dimensions();
-
-    if right_weight.abs() < 1e-8 && bottom_weight.abs() < 1e-8 {
-        // If it's integer, return that pixel
-        image
-            .get_pixel_checked(x as u32, y as u32)
-            .map(|p| p.to_owned())
-    } else if left < 0f32 || right >= width as f32 || top < 0f32 || bottom >= height as f32 {
-        // None if out of bound
-        None
-    } else {
-        // Do the interpolation
-        let (tl, tr, bl, br) = unsafe {
-            (
-                image.unsafe_get_pixel(left as u32, top as u32),
-                image.unsafe_get_pixel(right as u32, top as u32),
-                image.unsafe_get_pixel(left as u32, bottom as u32),
-                image.unsafe_get_pixel(right as u32, bottom as u32),
-            )
-        };
-        Some(blend_bilinear(tl, tr, bl, br, right_weight, bottom_weight))
-    }
-}
-
-/// Again, this is almost lifted verbatum from:
-///     https://docs.rs/imageproc/0.23.0/src/imageproc/geometric_transformations.rs.html#681
-/// But alas, this function is not declared as public so we can't just import it...
 pub fn interpolate_bilinear_with_bkg<P>(image: &Image<P>, x: f32, y: f32, background: P) -> P
 where
     P: Pixel,

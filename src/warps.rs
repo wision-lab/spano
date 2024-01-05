@@ -3,7 +3,8 @@ use std::ops::DivAssign;
 use conv::ValueInto;
 use image::{ImageBuffer, Pixel};
 use imageproc::definitions::{Clamp, Image};
-use ndarray::{array, concatenate, s, Array1, Array2, Array3, ArrayViewMut, Axis};
+use itertools::multizip;
+use ndarray::{array, concatenate, s, Array1, Array2, Array3, ArrayViewMut, ArrayViewMut1, Axis};
 use ndarray::{stack, Array};
 use ndarray_interp::interp1d::{CubicSpline, Interp1DBuilder};
 use ndarray_linalg::solve::Inverse;
@@ -251,13 +252,12 @@ where
     let ys = warpd.column(1);
 
     // Create and return image buffer
-    let pixels = xs.iter().zip(ys).map(|(&x, &y)| get_pixel(x, y));
+    let pixels = multizip((xs, ys)).map(|(&x, &y)| get_pixel(x, y));
     let mut out = ImageBuffer::new(width as u32, height as u32);
 
     // TODO: Maybe vectorize get_pixel?
-    for ((_, _, out_p), pix) in out.enumerate_pixels_mut().zip(pixels) {
-        *out_p = pix
-    }
+    // (out.enumerate_pixels_mut(), pixels).into_par_iter().for_each(|(_, _, out_p), pix| {*out_p = pix});
+    multizip((out.enumerate_pixels_mut(), pixels)).for_each(|((_, _, out_p), pix)| {*out_p = pix});
 
     out
 }
@@ -266,12 +266,21 @@ pub fn warp_array3(
     mapping: &Mapping,
     data: &Array3<f32>,
     out_size: (usize, usize, usize),
-    background: Array1<f32>,
+    background: Option<Array1<f32>>,
 ) -> Array3<f32> {
     let (_, h, w) = out_size;
     let mut out = Array3::zeros(out_size);
     let mut valid = Array2::from_elem((h, w), false);
-    warp_array3_into(mapping, data, &mut out, &mut valid, None, Some(background));
+    warp_array3_into(
+        mapping,
+        data,
+        &mut out,
+        &mut valid,
+        None,
+        background,
+        // Some(|mut pix, warped_val| pix.assign(&(pix.to_owned() + warped_val))),
+        None,
+    );
     out
 }
 
@@ -282,13 +291,10 @@ pub fn warp_array3_into(
     valid: &mut Array2<bool>,
     points: Option<&Array2<usize>>,
     background: Option<Array1<f32>>,
+    f: Option<fn(ArrayViewMut1<f32>, Array1<f32>)>,
 ) {
-    let [out_c, out_h, out_w] = out.shape() else {
-        unreachable!("Data is Array3, should have 3 dims!")
-    };
-    let [_data_c, data_h, data_w] = data.shape() else {
-        unreachable!("Data is Array3, should have 3 dims!")
-    };
+    let (out_c, out_h, out_w) = out.dim();
+    let (_data_c, data_h, data_w) = data.dim();
 
     // Points is a Nx2 array of xy pairs
     let num_points = out_w * out_h;
@@ -309,81 +315,85 @@ pub fn warp_array3_into(
         &points_
     };
 
-    // Warp all points and determine indices of in-bound ones
-    let (background, padding) = if let Some(bkg) = background {
-        (bkg, 1.0)
-    } else {
-        (Array1::<f32>::zeros(*out_c), 0.0)
-    };
-    let warpd = mapping.warp_points(points);
-    let in_range_x = |x: f32| -padding <= x && x <= (*data_w as f32) - 1.0 + padding;
-    let in_range_y = |y: f32| -padding <= y && y <= (*data_h as f32) - 1.0 + padding;
-    let left_top = warpd.mapv(|v| v.floor());
-    let right_bottom = left_top.mapv(|v| v + 1.0);
-    let right_bottom_weights = &warpd - &left_top;
+    // If no reduction function is present, simply assign to slice
+    let func = f.unwrap_or(|mut pix, warped_val| pix.assign(&warped_val));
 
-    // Perform interpolation into buffer
+    // If a background is specified, use that, otherwise use zeros
+    let (background, padding, has_bkg) = if let Some(bkg) = background {
+        (bkg, 1.0, true)
+    } else {
+        (Array1::<f32>::zeros(out_c), 0.0, false)
+    };
+
+    // Warp all points and determine indices of in-bound ones
+    let warpd = mapping.warp_points(points);
+    let in_range_x = |x: f32| -padding <= x && x <= (data_w as f32) - 1.0 + padding;
+    let in_range_y = |y: f32| -padding <= y && y <= (data_h as f32) - 1.0 + padding;
+
+    // Data sampler (enables smooth transition to bkg, i.e no jaggies)
     let get_pix_or_bkg = |x: f32, y: f32| {
-        if x < 0f32 || x >= *data_w as f32 || y < 0f32 || y >= *data_h as f32 {
+        if x < 0f32 || x >= data_w as f32 || y < 0f32 || y >= data_h as f32 {
             background.to_owned()
         } else {
             data.slice(s![.., y as i32, x as i32]).to_owned()
         }
     };
 
+    // Lambda to do bilinear interpolation 
+    let get_pixel = |x: f32, y: f32| {
+        let left = x.floor();
+        let right = left + 1f32;
+        let top = y.floor();
+        let bottom = top + 1f32;
+        let right_weight = x - left;
+        let bottom_weight = y - top;
+
+        let (tl, tr, bl, br) = (
+            get_pix_or_bkg(left, top),
+            get_pix_or_bkg(right, top),
+            get_pix_or_bkg(left, bottom),
+            get_pix_or_bkg(right, bottom),
+        );
+        let top = (1.0 - right_weight) * tl + right_weight * tr;
+        let bottom = (1.0 - right_weight) * bl + right_weight * br;
+        (1.0 - bottom_weight) * top + bottom_weight * bottom
+    };
+
+    // Create flattened views of data to enable parallel iterations
     let mut out_view =
-        ArrayViewMut::from_shape((*out_c, out_h * out_w), out.as_slice_mut().unwrap()).unwrap();
+        ArrayViewMut::from_shape((out_c, out_h * out_w), out.as_slice_mut().unwrap()).unwrap();
 
     let mut valid_view =
         ArrayViewMut::from_shape(num_points, valid.as_slice_mut().unwrap()).unwrap();
 
+    // Perform interpolation into buffer
     (
         out_view.axis_iter_mut(Axis(1)),
         valid_view.axis_iter_mut(Axis(0)),
-        points.axis_iter(Axis(0)),
-        warpd.axis_iter(Axis(0)),
-        left_top.axis_iter(Axis(0)),
-        right_bottom.axis_iter(Axis(0)),
-        right_bottom_weights.axis_iter(Axis(0)),
+        warpd.column(0).axis_iter(Axis(0)),
+        warpd.column(1).axis_iter(Axis(0))
     )
         .into_par_iter()
         .for_each(
-            |(mut out_slice, mut valid_slice, _dst_p, src_p, lt, rb, rb_w)| {
-                let [src_x, src_y] = src_p.to_vec()[..] else {
-                    unreachable!("XY pair has only two values")
-                };
+            // Why does `valid_slice` need to be marked as mut when its already an `ArrayViewMut`?
+            |(out_slice, mut valid_slice, x_, y_)| {
+                let x = *x_.into_scalar();
+                let y = *y_.into_scalar();
 
-                if !in_range_x(src_x) || !in_range_y(src_y) {
+                if !in_range_x(x) || !in_range_y(y) {
+                    if has_bkg {
+                        func(out_slice, background.to_owned());
+                    }
                     valid_slice.fill(false);
                     return;
                 }
 
-                let [l, t] = lt.to_vec()[..] else {
-                    unreachable!("XY pair has only two values")
-                };
-                let [r, b] = rb.to_vec()[..] else {
-                    unreachable!("XY pair has only two values")
-                };
-                let [rw, bw] = rb_w.to_vec()[..] else {
-                    unreachable!("XY pair has only two values")
-                };
-
-                // Do the interpolation
-                let (tl, tr, bl, br) = (
-                    get_pix_or_bkg(l, t),
-                    get_pix_or_bkg(r, t),
-                    get_pix_or_bkg(l, b),
-                    get_pix_or_bkg(r, b),
-                );
-                let top = (1.0 - rw) * tl + rw * tr;
-                let bottom = (1.0 - rw) * bl + rw * br;
-                let value = (1.0 - bw) * top + bw * bottom;
-                out_slice.assign(&value);
+                let value = get_pixel(x, y);
+                func(out_slice, value);
                 valid_slice.fill(true);
             },
         );
 }
-
 
 // ----------------------------------------------------------------------------
 #[cfg(test)]

@@ -7,11 +7,9 @@ use image::{io::Reader as ImageReader, ImageBuffer, Rgb};
 use image::{GrayImage, Luma};
 use indicatif::{ProgressIterator, ProgressStyle};
 use itertools::Itertools;
-use ndarray::{array, Array, Array2, Array3, Axis, Slice};
-use nshare::{ToNdarray2, ToNdarray3};
-use rayon::iter::{
-    IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
-};
+use ndarray::{array, Array, Array3, Axis, Slice};
+use nshare::ToNdarray3;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::fs::create_dir_all;
 use std::path::Path;
 use tempfile::tempdir;
@@ -30,11 +28,11 @@ use cli::{Cli, Commands, LKArgs, Parser};
 use ffmpeg::make_video;
 use io::PhotonCube;
 use lk::{gradients, hierarchical_iclk, iclk, iclk_grayscale};
-use transforms::{array2grayimage, process_colorspad, unpack_single};
+use transforms::{array2grayimage, process_colorspad, unpack_single, array_to_image};
 use utils::{animate_hierarchical_warp, animate_warp};
 use warps::{warp_array3, warp_image, Mapping, TransformationType};
 
-use crate::blend::{distance_transform, polygon_distance_transform};
+use crate::blend::distance_transform;
 use crate::transforms::apply_transform;
 
 fn print_type_of<T>(_: &T) {
@@ -157,11 +155,10 @@ fn main() -> Result<()> {
             let out = warp_image(&map, get_pixel, w as usize, h as usize);
             out.save("out1.png")?;
 
-            // Warp with sample_warped_grid: faster but single channel and jaggies
-            let data = grayscale(&img).into_ndarray3().mapv(|v| v as f32);
-            println!("{:?}", data.shape());
-            let out = warp_array3(&map, &data, (1, h as usize, w as usize), array![0.0]);
-            let out = array2grayimage(out.mapv(|v| v as u8).into_shape((h as usize, w as usize))?);
+            // Warp with warp_array3: hopefully faster...
+            let data = img.into_ndarray3().mapv(|v| v as f32);
+            let out = warp_array3(&map, &data, (3, h as usize, w as usize), Some(array![128.0, 0.0, 0.0]));
+            let out = array_to_image(out.mapv(|v| v as u8));
             out.save("out2.png")?;
             Ok(())
         }

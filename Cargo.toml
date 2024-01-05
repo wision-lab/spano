@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.79"
-clap = { version = "4.4.12", features = ["derive"] }
+clap = { version = "4.4.13", features = ["derive"] }
 conv = "0.3.3"
 ffmpeg-sidecar = "0.5.1"
 flate2 = "1.0.28"
@@ -32,6 +32,9 @@ tempfile = "3.9.0"
 approx = "0.5.1"
 ndarray-parallel = "0.9.1"
 ndarray-interp = "0.4.1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+pprof = { version = "0.13", features = ["flamegraph"] }
 
 [profile.release-with-debug]
 inherits = "release"
