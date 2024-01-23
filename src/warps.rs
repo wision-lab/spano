@@ -273,7 +273,7 @@ pub fn warp_array3(
     data: &Array3<f32>,
     out_size: (usize, usize, usize),
     background: Option<Array1<f32>>,
-) -> Array3<f32> {
+) -> (Array3<f32>, Array2<bool>) {
     let (h, w, _) = out_size;
     let mut out = Array3::zeros(out_size);
     let mut valid = Array2::from_elem((h, w), false);
@@ -281,7 +281,7 @@ pub fn warp_array3(
         mapping, data, &mut out, &mut valid, None, background,
         None,
     );
-    out
+    (out, valid)
 }
 
 pub fn warp_array3_into(

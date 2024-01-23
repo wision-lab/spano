@@ -7,7 +7,6 @@ use rusttype::{Font, Scale};
 
 use image::{imageops, ImageBuffer, Luma, Pixel, Rgb, RgbImage};
 use imageproc::drawing::{draw_text_mut, text_size};
-use imageproc::map::map_pixels;
 
 use ndarray::{s, Array, Array2, Array3, ArrayView2, Axis, Slice};
 use ndarray_stats::{interpolate::Linear, QuantileExt};
@@ -43,7 +42,7 @@ where
     Ok(unpacked_bitplane)
 }
 
-pub fn array2grayimage<T>(frame: Array2<T>) -> ImageBuffer<Luma<T>, Vec<T>>
+pub fn array2_to_grayimage<T>(frame: Array2<T>) -> ImageBuffer<Luma<T>, Vec<T>>
 where
     T: image::Primitive,
 {
@@ -55,12 +54,20 @@ where
     .unwrap()
 }
 
-pub fn array2rgbimage(frame: Array2<u8>) -> RgbImage {
-    // Create grayscale image
-    let img = array2grayimage(frame);
+// Replaces `nshare::ToNdarray2` 
+pub fn grayimage_to_array2<T>(im: ImageBuffer<Luma<T>, Vec<T>>) -> Array2<T> 
+where
+    T: image::Primitive,
+{
+    Array2::from_shape_vec((im.height() as usize, im.width() as usize), im.into_raw()).unwrap()
+}
 
-    // Convert it to rgb by duplicating each pixel
-    map_pixels(&img, |_x, _y, p| Rgb([p[0], p[0], p[0]]))
+// Same as above but with one channel
+pub fn grayimage_to_array3<T>(im: ImageBuffer<Luma<T>, Vec<T>>) -> Array3<T> 
+where
+    T: image::Primitive,
+{
+    Array3::from_shape_vec((im.height() as usize, im.width() as usize, 1), im.into_raw()).unwrap()
 }
 
 // Given an NDarray of HxWxC, convert it to an RGBImage (C must equal 3)
@@ -68,13 +75,24 @@ pub fn array2rgbimage(frame: Array2<u8>) -> RgbImage {
 //       This means we cannot use `nshare::ToNdarray3`
 //       as it converts an image to CHW format.
 // https://stackoverflow.com/questions/56762026/how-to-save-ndarray-in-rust-as-image
-pub fn array_to_image(arr: Array3<u8>) -> RgbImage {
+pub fn array3_to_rgbimage<P>(arr: Array3<P::Subpixel>) -> ImageBuffer<P, Vec<P::Subpixel>>
+where
+    P: image::Pixel,
+{
     assert!(arr.is_standard_layout());
     let (height, width, _) = arr.dim();
     let raw = arr.into_raw_vec();
 
-    RgbImage::from_raw(width as u32, height as u32, raw)
+    ImageBuffer::<P, Vec<P::Subpixel>>::from_raw(width as u32, height as u32, raw)
         .expect("container should have the right size for the image dimensions")
+}
+
+// Alternative to `nshare::ToNdarray3` which returns HWC array 
+pub fn rgbimage_to_array3<P>(im: ImageBuffer<P, Vec<P::Subpixel>>) -> Array3<P::Subpixel> 
+where
+    P: image::Pixel
+{
+    Array3::from_shape_vec((im.height() as usize, im.width() as usize, 3), im.into_raw()).unwrap()
 }
 
 pub fn annotate(frame: &mut RgbImage, text: &str) {

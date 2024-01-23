@@ -17,9 +17,10 @@ use ndarray::{
     array, par_azip, s, stack, Array, Array1, Array2, Array3, ArrayBase, ArrayView, Axis, NewAxis,
 };
 use ndarray_linalg::solve::Inverse;
-use nshare::{ToNdarray2, ToNdarray3};
+use nshare::ToNdarray2;
 use rayon::prelude::*;
 
+use crate::transforms::grayimage_to_array3;
 use crate::warps::{warp_array3_into, Mapping, TransformationType};
 
 /// Compute image gradients using Sobel operator
@@ -94,13 +95,11 @@ where
     let ys = points.column(1).mapv(|v| v as f32);
     let num_points = (w * h) as usize;
 
-    let img1_array = im1_gray.clone().into_ndarray3().mapv(|v| f32::from(v));
-    let img2_pixels = im2_gray
-        .clone()
-        .into_ndarray3()
+    let img1_array = grayimage_to_array3(im1_gray.clone()).mapv(|v| f32::from(v));
+    let img2_pixels = grayimage_to_array3(im2_gray.clone())
         .mapv(|v| f32::from(v))
-        .into_shape((1, num_points))?;
-    let mut warped_im1gray_pixels = Array3::<f32>::zeros((1, h as usize, w as usize));
+        .into_shape((num_points, 1))?;
+    let mut warped_im1gray_pixels = Array3::<f32>::zeros((h as usize, w as usize, 1));
     let mut valid = Array2::<bool>::from_elem((h as usize, w as usize), false);
     let (dx, dy) = im2_grad;
 
@@ -269,7 +268,7 @@ where
         );
 
         let warped_im1gray_pixels_view =
-            ArrayView::from_shape((1, num_points), warped_im1gray_pixels.as_slice().unwrap())
+            ArrayView::from_shape((num_points, 1), warped_im1gray_pixels.as_slice().unwrap())
                 .unwrap();
 
         let valid_view = ArrayView::from_shape(num_points, valid.as_slice().unwrap()).unwrap();
@@ -278,8 +277,8 @@ where
         let dp: Array2<f32> = hessian_inv.dot(
             &(
                 steepest_descent_ic_t.axis_iter(Axis(0)),
-                warped_im1gray_pixels_view.axis_iter(Axis(1)),
-                img2_pixels.axis_iter(Axis(1)),
+                warped_im1gray_pixels_view.axis_iter(Axis(0)),
+                img2_pixels.axis_iter(Axis(0)),
                 valid_view.axis_iter(Axis(0)),
             )
                 // Zip together all three iterators and valid flag

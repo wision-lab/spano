@@ -7,7 +7,7 @@ use image::{io::Reader as ImageReader, ImageBuffer, Rgb};
 use image::{GrayImage, Luma};
 use indicatif::{ProgressIterator, ProgressStyle};
 use itertools::Itertools;
-use ndarray::{array, Array, Array3, Axis, Slice};
+use ndarray::{array, Array, Array3, Axis, Slice, s};
 use nshare::ToNdarray3;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::fs::create_dir_all;
@@ -28,12 +28,12 @@ use cli::{Cli, Commands, LKArgs, Parser};
 use ffmpeg::make_video;
 use io::PhotonCube;
 use lk::{gradients, hierarchical_iclk, iclk, iclk_grayscale};
-use transforms::{array2grayimage, array_to_image, process_colorspad, unpack_single};
+use transforms::{process_colorspad, unpack_single, array3_to_rgbimage};
 use utils::{animate_hierarchical_warp, animate_warp};
 use warps::{warp_array3, warp_image, Mapping, TransformationType};
 
 use crate::blend::distance_transform;
-use crate::transforms::apply_transform;
+use crate::transforms::{apply_transform, array2_to_grayimage};
 
 fn print_type_of<T>(_: &T) {
     println!("{}", std::any::type_name::<T>())
@@ -160,13 +160,13 @@ fn main() -> Result<()> {
             let data = Array3::from_shape_vec((h as usize, w as usize, 3), img.into_raw())
                 .unwrap()
                 .mapv(|v| v as f32);
-            let out = warp_array3(
+            let (out, _) = warp_array3(
                 &map,
                 &data,
                 (h as usize, w as usize, 3),
                 Some(array![128.0, 0.0, 0.0]),
             );
-            let out = array_to_image(out.mapv(|v| v as u8));
+            let out = array3_to_rgbimage::<Rgb<u8>>(out.mapv(|v| v as u8));
             out.save("out2.png")?;
             Ok(())
         }
@@ -195,7 +195,7 @@ fn main() -> Result<()> {
                         .mapv(|v| (v / (burst_size as f32) * 255.0).round() as u8);
 
                     // Convert to image and resize/transform
-                    let img = array2grayimage(process_colorspad(frame));
+                    let img = array2_to_grayimage(process_colorspad(frame));
                     let img = resize(
                         &img,
                         (img.width() as f32 / lk_args.downscale).round() as u32,
