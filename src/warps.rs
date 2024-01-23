@@ -279,13 +279,11 @@ pub fn warp_array3(
     let mut valid = Array2::from_elem((h, w), false);
     warp_array3_into(
         mapping, data, &mut out, &mut valid, None, background,
-        // Some(|mut pix, warped_val| pix.assign(&(pix.to_owned() + warped_val))),
         None,
     );
     out
 }
 
-#[allow(clippy::type_complexity)]
 pub fn warp_array3_into(
     mapping: &Mapping,
     data: &Array3<f32>,
@@ -343,7 +341,7 @@ pub fn warp_array3_into(
         if x < 0f32 || x >= data_w as f32 || y < 0f32 || y >= data_h as f32 {
             bkg_slice
         } else {
-            let offset = (y as usize) * data_w + (x as usize);
+            let offset = ((y as usize) * data_w + (x as usize)) * data_c;
             &data_slice[offset..offset + data_c]
         }
     };
@@ -351,12 +349,17 @@ pub fn warp_array3_into(
     (
         out.as_slice_mut().unwrap().par_chunks_mut(out_c),
         valid.as_slice_mut().unwrap().par_iter_mut(),
-        warpd.column(0).as_slice().unwrap(),
-        warpd.column(1).as_slice().unwrap(),
+        // warpd.column(0).as_slice().unwrap(),
+        // warpd.column(1).as_slice().unwrap(),
+        warpd.column(0).axis_iter(Axis(0)),
+        warpd.column(1).axis_iter(Axis(0))
     )
         .into_par_iter()
-        .for_each(|(out_slice, valid_slice, x, y)| {
-            if !in_range_x(*x) || !in_range_y(*y) {
+        .for_each(|(out_slice, valid_slice, x_, y_)| {
+            let x = *x_.into_scalar();
+            let y = *y_.into_scalar();
+
+            if !in_range_x(x) || !in_range_y(y) {
                 if has_bkg {
                     multizip((out_slice.iter_mut(), bkg_slice, 0..out_c))
                         .for_each(|(dst, src, i)| func(dst, *src, i));
