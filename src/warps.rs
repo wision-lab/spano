@@ -317,10 +317,6 @@ pub fn warp_array3_into(
         &points_
     };
 
-    // If no reduction function is present, simply assign to slice
-    let func =
-        f.unwrap_or(|pix, warped_val| pix.iter_mut().zip(warped_val).for_each(|(p, w)| *p = *w));
-
     // If a background is specified, use that, otherwise use zeros
     let (background, padding, has_bkg) = if let Some(bkg) = background {
         (bkg, 1.0, true)
@@ -349,34 +345,6 @@ pub fn warp_array3_into(
         }
     };
 
-    // Lambda to do bilinear interpolation
-    let get_pixel = |x: f32, y: f32| {
-        let left = x.floor();
-        let right = left + 1f32;
-        let top = y.floor();
-        let bottom = top + 1f32;
-        let right_weight = x - left;
-        let left_weight = 1.0 - right_weight;
-        let bottom_weight = y - top;
-        let top_weight = 1.0 - bottom_weight;
-
-        let (tl, tr, bl, br) = (
-            get_pix_or_bkg(left, top),
-            get_pix_or_bkg(right, top),
-            get_pix_or_bkg(left, bottom),
-            get_pix_or_bkg(right, bottom),
-        );
-
-        multizip((tl, tr, bl, br))
-            .map(|(tl, tr, bl, br)| {
-                top_weight * left_weight * tl
-                    + top_weight * right_weight * tr
-                    + bottom_weight * left_weight * bl
-                    + bottom_weight * right_weight * br
-            })
-            .collect::<Vec<f32>>()
-    };
-
     (
         out.as_slice_mut().unwrap().par_chunks_mut(out_c),
         valid.as_slice_mut().unwrap().par_iter_mut(),
@@ -387,14 +355,49 @@ pub fn warp_array3_into(
         .for_each(|(out_slice, valid_slice, x, y)| {
             if !in_range_x(*x) || !in_range_y(*y) {
                 if has_bkg {
-                    func(out_slice, bkg_slice);
+                    // If no reduction function is present, simply assign to slice
+                    if let Some(func) = f {
+                        func(out_slice, bkg_slice);
+                    } else {
+                        out_slice.iter_mut().zip(bkg_slice).for_each(|(p, v)| *p = *v);
+                    }
                 }
                 *valid_slice = false;
                 return;
             }
 
-            let value = get_pixel(*x, *y);
-            func(out_slice, &value);
+
+            let left = x.floor();
+            let right = left + 1f32;
+            let top = y.floor();
+            let bottom = top + 1f32;
+            let right_weight = x - left;
+            let left_weight = 1.0 - right_weight;
+            let bottom_weight = y - top;
+            let top_weight = 1.0 - bottom_weight;
+
+            let (tl, tr, bl, br) = (
+                get_pix_or_bkg(left, top),
+                get_pix_or_bkg(right, top),
+                get_pix_or_bkg(left, bottom),
+                get_pix_or_bkg(right, bottom),
+            );
+
+            let value = multizip((tl, tr, bl, br))
+                .map(|(tl, tr, bl, br)| {
+                    top_weight * left_weight * tl
+                        + top_weight * right_weight * tr
+                        + bottom_weight * left_weight * bl
+                        + bottom_weight * right_weight * br
+                });
+
+            // If no reduction function is present, simply assign to slice
+            if let Some(func) = f {
+                func(out_slice, &value.collect::<Vec<_>>());
+            } else {
+                out_slice.iter_mut().zip(value).for_each(|(p, v)| *p = v);
+            }
+
             *valid_slice = true;
         });
 }
