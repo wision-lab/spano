@@ -10,6 +10,7 @@ use ndarray_interp::interp1d::{CubicSpline, Interp1DBuilder};
 use ndarray_linalg::solve::Inverse;
 use num_traits::AsPrimitive;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rayon::slice::ParallelSliceMut;
 
 #[derive(Copy, Clone, Debug)]
 pub enum TransformationType {
@@ -232,7 +233,7 @@ impl Mapping {
 
 pub fn warp_image<P, Fi>(mapping: &Mapping, get_pixel: Fi, width: usize, height: usize) -> Image<P>
 where
-    P: Pixel,
+    P: Pixel + Send + Sync,
     <P as Pixel>::Subpixel: Send + Sync,
     <P as Pixel>::Subpixel: ValueInto<f32> + Clamp<f32>,
     Fi: Fn(f32, f32) -> P + Send + Sync,
@@ -252,12 +253,32 @@ where
     let ys = warpd.column(1);
 
     // Create and return image buffer
-    let pixels = multizip((xs, ys)).map(|(&x, &y)| get_pixel(x, y));
     let mut out = ImageBuffer::new(width as u32, height as u32);
+    // let pitch = P::CHANNEL_COUNT as usize * width as usize;
+    // (
+    //     out.par_chunks_mut(pitch),
+    //     xs.axis_chunks_iter(Axis(0), width),
+    //     ys.axis_chunks_iter(Axis(0), width),
+    // )
+    //     .into_par_iter()
+    //     .map(|(row, chunked_xs, chunked_ys)| {
+    //         for (pixel, x, y) in multizip(
+    //             (row.chunks_mut(P::CHANNEL_COUNT as usize), chunked_xs, chunked_ys)
+    //         ) {
+    //             *P::from_slice_mut(pixel)  = get_pixel(*x, *y);
+    //         }
+    //     }).count();
 
-    // TODO: Maybe vectorize get_pixel?
-    // (out.enumerate_pixels_mut(), pixels).into_par_iter().for_each(|(_, _, out_p), pix| {*out_p = pix});
-    multizip((out.enumerate_pixels_mut(), pixels)).for_each(|((_, _, out_p), pix)| {*out_p = pix});
+    (
+        out.par_chunks_mut(P::CHANNEL_COUNT as usize),
+        xs.axis_iter(Axis(0)),
+        ys.axis_iter(Axis(0)),
+    )
+        .into_par_iter()
+        .map(|(pixel, x, y)| {
+            *P::from_slice_mut(pixel) = get_pixel(*x.into_scalar(), *y.into_scalar());
+        })
+        .count();
 
     out
 }
@@ -268,16 +289,11 @@ pub fn warp_array3(
     out_size: (usize, usize, usize),
     background: Option<Array1<f32>>,
 ) -> Array3<f32> {
-    let (_, h, w) = out_size;
+    let (h, w, _) = out_size;
     let mut out = Array3::zeros(out_size);
     let mut valid = Array2::from_elem((h, w), false);
     warp_array3_into(
-        mapping,
-        data,
-        &mut out,
-        &mut valid,
-        None,
-        background,
+        mapping, data, &mut out, &mut valid, None, background,
         // Some(|mut pix, warped_val| pix.assign(&(pix.to_owned() + warped_val))),
         None,
     );
@@ -293,8 +309,8 @@ pub fn warp_array3_into(
     background: Option<Array1<f32>>,
     f: Option<fn(ArrayViewMut1<f32>, Array1<f32>)>,
 ) {
-    let (out_c, out_h, out_w) = out.dim();
-    let (_data_c, data_h, data_w) = data.dim();
+    let (out_h, out_w, out_c) = out.dim();
+    let (data_h, data_w, data_c) = data.dim();
 
     // Points is a Nx2 array of xy pairs
     let num_points = out_w * out_h;
@@ -331,15 +347,20 @@ pub fn warp_array3_into(
     let in_range_y = |y: f32| -padding <= y && y <= (data_h as f32) - 1.0 + padding;
 
     // Data sampler (enables smooth transition to bkg, i.e no jaggies)
+    let bkg_vec = background.to_vec();
+    let data_vec = data
+        .as_slice()
+        .expect("Data should be contiguous and HWC format");
     let get_pix_or_bkg = |x: f32, y: f32| {
         if x < 0f32 || x >= data_w as f32 || y < 0f32 || y >= data_h as f32 {
-            background.to_owned()
+            &bkg_vec[..]
         } else {
-            data.slice(s![.., y as i32, x as i32]).to_owned()
+            let offset = (y as usize) * data_w + (x as usize);
+            &data_vec[offset..offset + data_c]
         }
     };
 
-    // Lambda to do bilinear interpolation 
+    // Lambda to do bilinear interpolation
     let get_pixel = |x: f32, y: f32| {
         let left = x.floor();
         let right = left + 1f32;
@@ -354,24 +375,38 @@ pub fn warp_array3_into(
             get_pix_or_bkg(left, bottom),
             get_pix_or_bkg(right, bottom),
         );
-        let top = (1.0 - right_weight) * tl + right_weight * tr;
-        let bottom = (1.0 - right_weight) * bl + right_weight * br;
-        (1.0 - bottom_weight) * top + bottom_weight * bottom
+        // let top = (1.0 - right_weight) * tl + right_weight * tr;
+        // let bottom = (1.0 - right_weight) * bl + right_weight * br;
+        // (1.0 - bottom_weight) * top + bottom_weight * bottom
+
+        multizip((
+            multizip((tl, tr)).map(|(a, b)| (1.0 - right_weight) * a + right_weight * b),
+            multizip((bl, br)).map(|(a, b)| (1.0 - right_weight) * a + right_weight * b),
+        ))
+        .map(|(t, b)| (1.0 - bottom_weight) * t + bottom_weight * b)
+        .collect()
     };
 
     // Create flattened views of data to enable parallel iterations
     let mut out_view =
-        ArrayViewMut::from_shape((out_c, out_h * out_w), out.as_slice_mut().unwrap()).unwrap();
+        ArrayViewMut::from_shape((out_h * out_w, out_c), out.as_slice_mut().unwrap()).unwrap();
 
     let mut valid_view =
         ArrayViewMut::from_shape(num_points, valid.as_slice_mut().unwrap()).unwrap();
 
+    // (
+    //     // out.exact_chunks_mut((1, 1, out_c)),
+    //     // valid,
+    //     warpd.column(0).view(),
+    //     warpd.column(1).view(),
+    // ).into_par_iter().count();
+
     // Perform interpolation into buffer
     (
-        out_view.axis_iter_mut(Axis(1)),
+        out_view.axis_iter_mut(Axis(0)),
         valid_view.axis_iter_mut(Axis(0)),
         warpd.column(0).axis_iter(Axis(0)),
-        warpd.column(1).axis_iter(Axis(0))
+        warpd.column(1).axis_iter(Axis(0)),
     )
         .into_par_iter()
         .for_each(

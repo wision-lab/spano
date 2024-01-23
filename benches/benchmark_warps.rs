@@ -1,16 +1,20 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 
 #[cfg(target_os = "linux")]
-use pprof::criterion::{PProfProfiler, Output};
+use pprof::criterion::{Output, PProfProfiler};
 
 use image::{io::Reader as ImageReader, Rgb};
 use ndarray::{array, Array2, Array3};
-use nshare::ToNdarray3;
 
 use spano::{
-    distance_transform, interpolate_bilinear_with_bkg, warp_array3_into, warp_image, Mapping,
-    TransformationType, warp_array3, 
+    distance_transform,
+    interpolate_bilinear_with_bkg,
+    warp_array3,
     // array_to_image,
+    warp_array3_into,
+    warp_image,
+    Mapping,
+    TransformationType,
 };
 
 pub fn benchmark_warp_image(c: &mut Criterion) {
@@ -47,7 +51,9 @@ pub fn benchmark_warp_array3(c: &mut Criterion) {
         .unwrap()
         .into_rgb8();
     let (w, h) = img.dimensions();
-    let data = img.into_ndarray3().mapv(|v| v as f32);
+    let data = Array3::from_shape_vec((h as usize, w as usize, 3), img.into_raw())
+        .unwrap()
+        .mapv(|v| v as f32);
 
     let map = Mapping::from_matrix(
         array![
@@ -61,7 +67,12 @@ pub fn benchmark_warp_array3(c: &mut Criterion) {
 
     c.bench_function("warp_array3", |b| {
         b.iter(|| {
-            let _out = warp_array3(&map, &data, (3, h as usize, w as usize), Some(array![128.0, 0.0, 0.0]));
+            let _out = warp_array3(
+                &map,
+                &data,
+                (h as usize, w as usize, 3),
+                Some(array![128.0, 0.0, 0.0]),
+            );
             // let out = array_to_image(out.mapv(|v| v as u8));
             // out.save("out2.png").unwrap();
         })
@@ -75,7 +86,9 @@ pub fn benchmark_warp_array3_into(c: &mut Criterion) {
         .unwrap()
         .into_rgb8();
     let (w, h) = img.dimensions();
-    let arr = img.into_ndarray3().mapv(|v| v as f32);
+    let arr = Array3::from_shape_vec((h as usize, w as usize, 3), img.into_raw())
+        .unwrap()
+        .mapv(|v| v as f32);
 
     let map = Mapping::from_matrix(
         array![
@@ -87,7 +100,7 @@ pub fn benchmark_warp_array3_into(c: &mut Criterion) {
     )
     .rescale(1.0 / 16.0);
 
-    let mut out = Array3::zeros((3, h as usize, w as usize));
+    let mut out = Array3::zeros((h as usize, w as usize, 3));
     let mut valid = Array2::from_elem((h as usize, w as usize), false);
 
     c.bench_function("warp_array3_into", |b| {
@@ -114,13 +127,13 @@ pub fn benchmark_distance_transform(c: &mut Criterion) {
 }
 
 #[cfg(target_os = "linux")]
-criterion_group!{
+criterion_group! {
     name = benches;
     config = Criterion::default()
         .with_profiler(
             PProfProfiler::new(100, Output::Flamegraph(None))
         );
-    targets =  
+    targets =
         benchmark_warp_image,
         benchmark_warp_array3,
         // benchmark_warp_array3_into,
@@ -128,7 +141,7 @@ criterion_group!{
 }
 
 #[cfg(not(target_os = "linux"))]
-criterion_group!{
+criterion_group! {
     benches,
     benchmark_warp_image,
     benchmark_warp_array3,

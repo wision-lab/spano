@@ -1,2 +1,7 @@
 /target
 /tmp 
+*.png
+*.mp4
+.vscode/
+*.svg
+*.json

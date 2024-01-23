@@ -28,7 +28,7 @@ use cli::{Cli, Commands, LKArgs, Parser};
 use ffmpeg::make_video;
 use io::PhotonCube;
 use lk::{gradients, hierarchical_iclk, iclk, iclk_grayscale};
-use transforms::{array2grayimage, process_colorspad, unpack_single, array_to_image};
+use transforms::{array2grayimage, array_to_image, process_colorspad, unpack_single};
 use utils::{animate_hierarchical_warp, animate_warp};
 use warps::{warp_array3, warp_image, Mapping, TransformationType};
 
@@ -156,8 +156,16 @@ fn main() -> Result<()> {
             out.save("out1.png")?;
 
             // Warp with warp_array3: hopefully faster...
-            let data = img.into_ndarray3().mapv(|v| v as f32);
-            let out = warp_array3(&map, &data, (3, h as usize, w as usize), Some(array![128.0, 0.0, 0.0]));
+            // Note: We cannot use `img.into_ndarray3()` as it results in CHW array
+            let data = Array3::from_shape_vec((h as usize, w as usize, 3), img.into_raw())
+                .unwrap()
+                .mapv(|v| v as f32);
+            let out = warp_array3(
+                &map,
+                &data,
+                (h as usize, w as usize, 3),
+                Some(array![128.0, 0.0, 0.0]),
+            );
             let out = array_to_image(out.mapv(|v| v as u8));
             out.save("out2.png")?;
             Ok(())
