@@ -4,12 +4,12 @@ use conv::ValueInto;
 use image::{ImageBuffer, Pixel};
 use imageproc::definitions::{Clamp, Image};
 use itertools::multizip;
-use ndarray::{array, concatenate, s, Array1, Array2, Array3, ArrayViewMut, ArrayViewMut1, Axis};
+use ndarray::{array, concatenate, s, Array1, Array2, Array3, Axis};
 use ndarray::{stack, Array};
 use ndarray_interp::interp1d::{CubicSpline, Interp1DBuilder};
 use ndarray_linalg::solve::Inverse;
 use num_traits::AsPrimitive;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rayon::iter::{IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 use rayon::slice::ParallelSliceMut;
 
 #[derive(Copy, Clone, Debug)]
@@ -254,21 +254,6 @@ where
 
     // Create and return image buffer
     let mut out = ImageBuffer::new(width as u32, height as u32);
-    // let pitch = P::CHANNEL_COUNT as usize * width as usize;
-    // (
-    //     out.par_chunks_mut(pitch),
-    //     xs.axis_chunks_iter(Axis(0), width),
-    //     ys.axis_chunks_iter(Axis(0), width),
-    // )
-    //     .into_par_iter()
-    //     .map(|(row, chunked_xs, chunked_ys)| {
-    //         for (pixel, x, y) in multizip(
-    //             (row.chunks_mut(P::CHANNEL_COUNT as usize), chunked_xs, chunked_ys)
-    //         ) {
-    //             *P::from_slice_mut(pixel)  = get_pixel(*x, *y);
-    //         }
-    //     }).count();
-
     (
         out.par_chunks_mut(P::CHANNEL_COUNT as usize),
         xs.axis_iter(Axis(0)),
@@ -300,6 +285,7 @@ pub fn warp_array3(
     out
 }
 
+#[allow(clippy::type_complexity)]
 pub fn warp_array3_into(
     mapping: &Mapping,
     data: &Array3<f32>,
@@ -307,7 +293,7 @@ pub fn warp_array3_into(
     valid: &mut Array2<bool>,
     points: Option<&Array2<usize>>,
     background: Option<Array1<f32>>,
-    f: Option<fn(ArrayViewMut1<f32>, Array1<f32>)>,
+    f: Option<fn(&mut [f32], &[f32])>,
 ) {
     let (out_h, out_w, out_c) = out.dim();
     let (data_h, data_w, data_c) = data.dim();
@@ -332,7 +318,8 @@ pub fn warp_array3_into(
     };
 
     // If no reduction function is present, simply assign to slice
-    let func = f.unwrap_or(|mut pix, warped_val| pix.assign(&warped_val));
+    let func =
+        f.unwrap_or(|pix, warped_val| pix.iter_mut().zip(warped_val).for_each(|(p, w)| *p = *w));
 
     // If a background is specified, use that, otherwise use zeros
     let (background, padding, has_bkg) = if let Some(bkg) = background {
@@ -347,16 +334,18 @@ pub fn warp_array3_into(
     let in_range_y = |y: f32| -padding <= y && y <= (data_h as f32) - 1.0 + padding;
 
     // Data sampler (enables smooth transition to bkg, i.e no jaggies)
-    let bkg_vec = background.to_vec();
-    let data_vec = data
+    let bkg_slice = background
+        .as_slice()
+        .expect("Background should be contiguous in memory");
+    let data_slice = data
         .as_slice()
         .expect("Data should be contiguous and HWC format");
     let get_pix_or_bkg = |x: f32, y: f32| {
         if x < 0f32 || x >= data_w as f32 || y < 0f32 || y >= data_h as f32 {
-            &bkg_vec[..]
+            bkg_slice
         } else {
             let offset = (y as usize) * data_w + (x as usize);
-            &data_vec[offset..offset + data_c]
+            &data_slice[offset..offset + data_c]
         }
     };
 
@@ -367,7 +356,9 @@ pub fn warp_array3_into(
         let top = y.floor();
         let bottom = top + 1f32;
         let right_weight = x - left;
+        let left_weight = 1.0 - right_weight;
         let bottom_weight = y - top;
+        let top_weight = 1.0 - bottom_weight;
 
         let (tl, tr, bl, br) = (
             get_pix_or_bkg(left, top),
@@ -375,59 +366,37 @@ pub fn warp_array3_into(
             get_pix_or_bkg(left, bottom),
             get_pix_or_bkg(right, bottom),
         );
-        // let top = (1.0 - right_weight) * tl + right_weight * tr;
-        // let bottom = (1.0 - right_weight) * bl + right_weight * br;
-        // (1.0 - bottom_weight) * top + bottom_weight * bottom
 
-        multizip((
-            multizip((tl, tr)).map(|(a, b)| (1.0 - right_weight) * a + right_weight * b),
-            multizip((bl, br)).map(|(a, b)| (1.0 - right_weight) * a + right_weight * b),
-        ))
-        .map(|(t, b)| (1.0 - bottom_weight) * t + bottom_weight * b)
-        .collect()
+        multizip((tl, tr, bl, br))
+            .map(|(tl, tr, bl, br)| {
+                top_weight * left_weight * tl
+                    + top_weight * right_weight * tr
+                    + bottom_weight * left_weight * bl
+                    + bottom_weight * right_weight * br
+            })
+            .collect::<Vec<f32>>()
     };
 
-    // Create flattened views of data to enable parallel iterations
-    let mut out_view =
-        ArrayViewMut::from_shape((out_h * out_w, out_c), out.as_slice_mut().unwrap()).unwrap();
-
-    let mut valid_view =
-        ArrayViewMut::from_shape(num_points, valid.as_slice_mut().unwrap()).unwrap();
-
-    // (
-    //     // out.exact_chunks_mut((1, 1, out_c)),
-    //     // valid,
-    //     warpd.column(0).view(),
-    //     warpd.column(1).view(),
-    // ).into_par_iter().count();
-
-    // Perform interpolation into buffer
     (
-        out_view.axis_iter_mut(Axis(0)),
-        valid_view.axis_iter_mut(Axis(0)),
-        warpd.column(0).axis_iter(Axis(0)),
-        warpd.column(1).axis_iter(Axis(0)),
+        out.as_slice_mut().unwrap().par_chunks_mut(out_c),
+        valid.as_slice_mut().unwrap().par_iter_mut(),
+        warpd.column(0).as_slice().unwrap(),
+        warpd.column(1).as_slice().unwrap(),
     )
         .into_par_iter()
-        .for_each(
-            // Why does `valid_slice` need to be marked as mut when its already an `ArrayViewMut`?
-            |(out_slice, mut valid_slice, x_, y_)| {
-                let x = *x_.into_scalar();
-                let y = *y_.into_scalar();
-
-                if !in_range_x(x) || !in_range_y(y) {
-                    if has_bkg {
-                        func(out_slice, background.to_owned());
-                    }
-                    valid_slice.fill(false);
-                    return;
+        .for_each(|(out_slice, valid_slice, x, y)| {
+            if !in_range_x(*x) || !in_range_y(*y) {
+                if has_bkg {
+                    func(out_slice, bkg_slice);
                 }
+                *valid_slice = false;
+                return;
+            }
 
-                let value = get_pixel(x, y);
-                func(out_slice, value);
-                valid_slice.fill(true);
-            },
-        );
+            let value = get_pixel(*x, *y);
+            func(out_slice, &value);
+            *valid_slice = true;
+        });
 }
 
 // ----------------------------------------------------------------------------

@@ -34,7 +34,7 @@ ndarray-parallel = "0.9.1"
 ndarray-interp = "0.4.1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-pprof = { version = "0.13", features = ["flamegraph"] }
+pprof = { version = "0.13", features = ["flamegraph", "criterion"] }
 
 [profile.release-with-debug]
 inherits = "release"
