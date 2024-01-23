@@ -54,8 +54,8 @@ where
     .unwrap()
 }
 
-// Replaces `nshare::ToNdarray2` 
-pub fn grayimage_to_array2<T>(im: ImageBuffer<Luma<T>, Vec<T>>) -> Array2<T> 
+// Replaces `nshare::ToNdarray2`
+pub fn grayimage_to_array2<T>(im: ImageBuffer<Luma<T>, Vec<T>>) -> Array2<T>
 where
     T: image::Primitive,
 {
@@ -63,11 +63,15 @@ where
 }
 
 // Same as above but with one channel
-pub fn grayimage_to_array3<T>(im: ImageBuffer<Luma<T>, Vec<T>>) -> Array3<T> 
+pub fn grayimage_to_array3<T>(im: ImageBuffer<Luma<T>, Vec<T>>) -> Array3<T>
 where
     T: image::Primitive,
 {
-    Array3::from_shape_vec((im.height() as usize, im.width() as usize, 1), im.into_raw()).unwrap()
+    Array3::from_shape_vec(
+        (im.height() as usize, im.width() as usize, 1),
+        im.into_raw(),
+    )
+    .unwrap()
 }
 
 // Given an NDarray of HxWxC, convert it to an RGBImage (C must equal 3)
@@ -87,12 +91,16 @@ where
         .expect("container should have the right size for the image dimensions")
 }
 
-// Alternative to `nshare::ToNdarray3` which returns HWC array 
-pub fn rgbimage_to_array3<P>(im: ImageBuffer<P, Vec<P::Subpixel>>) -> Array3<P::Subpixel> 
+// Alternative to `nshare::ToNdarray3` which returns HWC array
+pub fn rgbimage_to_array3<P>(im: ImageBuffer<P, Vec<P::Subpixel>>) -> Array3<P::Subpixel>
 where
-    P: image::Pixel
+    P: image::Pixel,
 {
-    Array3::from_shape_vec((im.height() as usize, im.width() as usize, 3), im.into_raw()).unwrap()
+    Array3::from_shape_vec(
+        (im.height() as usize, im.width() as usize, 3),
+        im.into_raw(),
+    )
+    .unwrap()
 }
 
 pub fn annotate(frame: &mut RgbImage, text: &str) {

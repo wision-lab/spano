@@ -257,7 +257,7 @@ where
 
         // Create mapping from params and use it to sample points from img1
         let mapping = Mapping::from_params(&params);
-        warp_array3_into(
+        warp_array3_into::<f32>(
             &mapping,
             &img1_array,
             &mut warped_im1gray_pixels,

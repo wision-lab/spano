@@ -268,31 +268,35 @@ where
     out
 }
 
-pub fn warp_array3(
+pub fn warp_array3<T>(
     mapping: &Mapping,
-    data: &Array3<f32>,
+    data: &Array3<T>,
     out_size: (usize, usize, usize),
-    background: Option<Array1<f32>>,
-) -> (Array3<f32>, Array2<bool>) {
+    background: Option<Array1<T>>,
+) -> (Array3<T>, Array2<bool>)
+where
+    T: num_traits::Zero + Clone + Copy + From<f32> + Send + Sync,
+    f32: From<T>,
+{
     let (h, w, _) = out_size;
     let mut out = Array3::zeros(out_size);
     let mut valid = Array2::from_elem((h, w), false);
-    warp_array3_into(
-        mapping, data, &mut out, &mut valid, None, background,
-        None,
-    );
+    warp_array3_into(mapping, data, &mut out, &mut valid, None, background, None);
     (out, valid)
 }
 
-pub fn warp_array3_into(
+pub fn warp_array3_into<T>(
     mapping: &Mapping,
-    data: &Array3<f32>,
-    out: &mut Array3<f32>,
+    data: &Array3<T>,
+    out: &mut Array3<T>,
     valid: &mut Array2<bool>,
     points: Option<&Array2<usize>>,
-    background: Option<Array1<f32>>,
-    func: Option<fn(&mut f32, f32, usize)>,
-) {
+    background: Option<Array1<T>>,
+    func: Option<fn(&mut T, T, usize)>,
+) where
+    T: num_traits::Zero + Clone + Copy + From<f32> + Send + Sync,
+    f32: From<T>,
+{
     let (out_h, out_w, out_c) = out.dim();
     let (data_h, data_w, data_c) = data.dim();
 
@@ -322,7 +326,7 @@ pub fn warp_array3_into(
     let (background, padding, has_bkg) = if let Some(bkg) = background {
         (bkg, 1.0, true)
     } else {
-        (Array1::<f32>::zeros(out_c), 0.0, false)
+        (Array1::<T>::zeros(out_c), 0.0, false)
     };
 
     // Warp all points and determine indices of in-bound ones
@@ -352,7 +356,7 @@ pub fn warp_array3_into(
         // warpd.column(0).as_slice().unwrap(),
         // warpd.column(1).as_slice().unwrap(),
         warpd.column(0).axis_iter(Axis(0)),
-        warpd.column(1).axis_iter(Axis(0))
+        warpd.column(1).axis_iter(Axis(0)),
     )
         .into_par_iter()
         .for_each(|(out_slice, valid_slice, x_, y_)| {
@@ -386,10 +390,12 @@ pub fn warp_array3_into(
             );
 
             let value = multizip((tl, tr, bl, br)).map(|(tl, tr, bl, br)| {
-                top_weight * left_weight * tl
-                    + top_weight * right_weight * tr
-                    + bottom_weight * left_weight * bl
-                    + bottom_weight * right_weight * br
+                T::from(
+                    top_weight * left_weight * f32::from(*tl)
+                        + top_weight * right_weight * f32::from(*tr)
+                        + bottom_weight * left_weight * f32::from(*bl)
+                        + bottom_weight * right_weight * f32::from(*br),
+                )
             });
 
             multizip((out_slice.iter_mut(), value, 0..out_c))

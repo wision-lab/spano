@@ -7,7 +7,7 @@ use image::{io::Reader as ImageReader, ImageBuffer, Rgb};
 use image::{GrayImage, Luma};
 use indicatif::{ProgressIterator, ProgressStyle};
 use itertools::Itertools;
-use ndarray::{array, Array, Array3, Axis, Slice, s};
+use ndarray::{array, s, Array, Array3, Axis, Slice};
 use nshare::ToNdarray3;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::fs::create_dir_all;
@@ -28,7 +28,7 @@ use cli::{Cli, Commands, LKArgs, Parser};
 use ffmpeg::make_video;
 use io::PhotonCube;
 use lk::{gradients, hierarchical_iclk, iclk, iclk_grayscale};
-use transforms::{process_colorspad, unpack_single, array3_to_rgbimage};
+use transforms::{array3_to_rgbimage, process_colorspad, unpack_single};
 use utils::{animate_hierarchical_warp, animate_warp};
 use warps::{warp_array3, warp_image, Mapping, TransformationType};
 
