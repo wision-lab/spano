@@ -350,7 +350,7 @@ where
             mapping,
             max_iters,
             stop_early,
-            Some(&format!("Using scale {:}", &current_scale)),
+            Some(&format!("Using scale 1/{:}", &current_scale)),
         )?;
 
         // Re-normalize mapping to scale of next level of pyramid

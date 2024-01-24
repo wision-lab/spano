@@ -1,7 +1,7 @@
 use ndarray::{azip, s, stack, Array, Array1, Array2, Axis};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-use crate::Mapping;
+use crate::warps::Mapping;
 
 /// Computes normalized and clipped distance transform (bwdist) for rectangle that fills image
 pub fn distance_transform(size: (usize, usize)) -> Array2<f32> {

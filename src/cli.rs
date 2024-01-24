@@ -38,7 +38,6 @@ pub struct Cli {
 }
 
 #[derive(Args, Debug, Clone)]
-/// Register two or more images and animate optimization process.
 pub struct LKArgs {
     /// If enabled, use multi-level / hierarchical matching
     #[arg(long, default_value_t = false)]
@@ -49,16 +48,31 @@ pub struct LKArgs {
     pub downscale: f32,
 
     /// Number of LK iterations to use
-    #[arg(long, default_value_t = 250)]
+    #[arg(long, default_value_t = 150)]
     pub iterations: i32,
 
-    /// Stop optimization process when updates have an L1 norm less than this value
-    #[arg(long, default_value_t = 1e-3)]
+    /// Stop optimization process when parameter updates have an L1 norm less than this value
+    #[arg(long, default_value_t = 5e-3)]
     pub early_stop: f32,
 
     /// Maximum number of levels to use (only used when `--multi`)
     #[arg(long, default_value_t = 8)]
     pub max_lvls: u32,
+
+    /// Save parameters of optimization to file
+    #[arg(long)]
+    pub params_path: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct PanoArgs {
+    /// Index of binary frame at which to start the preview from (inclusive)
+    #[arg(short, long, default_value = None)]
+    pub start: Option<usize>,
+
+    /// Index of binary frame at which to stop the preview at (exclusive)
+    #[arg(short, long, default_value = None)]
+    pub stop: Option<usize>,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -68,9 +82,6 @@ pub enum Commands {
 
     /// Estimate pairwise homographies and interpolate to all frames.
     Pano(LKArgs),
-
-    /// TEST WARPS
-    Warp(LKArgs),
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug)]

@@ -10,7 +10,8 @@ use itertools::Itertools;
 use ndarray::{array, s, Array, Array3, Axis, Slice};
 use nshare::ToNdarray3;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use std::fs::create_dir_all;
+use serde::{Deserialize, Serialize};
+use std::fs::{self, create_dir_all};
 use std::path::Path;
 use tempfile::tempdir;
 
@@ -66,7 +67,7 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
     create_dir_all(&img_dir).ok();
 
     // Perform Matching
-    let mapping = if !lk_args.multi {
+    let (mapping, params_history_str, num_steps) = if !lk_args.multi {
         // Register images
         let (mapping, params_history) = iclk(
             &img1,
@@ -75,8 +76,10 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
             Some(lk_args.iterations),
             Some(lk_args.early_stop),
         )?;
+        let num_steps = params_history.len();
 
         // Show Animation of optimization
+        let params_history_str = serde_json::to_string_pretty(&params_history)?;
         if global_args.viz_output.is_some() {
             animate_warp(
                 img2_path,
@@ -88,7 +91,7 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
                 global_args.viz_output.as_deref(),
             )?;
         }
-        mapping
+        (mapping, params_history_str, num_steps)
     } else {
         // Register images
         let (mapping, params_history) = hierarchical_iclk(
@@ -100,8 +103,10 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
             lk_args.max_lvls,
             Some(lk_args.early_stop),
         )?;
+        let num_steps = params_history.values().map(|v| v.len()).sum();
 
         // Show Animation of optimization
+        let params_history_str = serde_json::to_string_pretty(&params_history)?;
         if global_args.viz_output.is_some() {
             animate_hierarchical_warp(
                 img2_path,
@@ -113,18 +118,29 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
                 global_args.viz_output.as_deref(),
             )?;
         }
-        mapping
+        (mapping, params_history_str, num_steps)
     };
 
-    let out = warp_image(
-        &mapping,
-        &img2,
-        (h as usize, w as usize),
-        Some(Rgb([128, 0, 0])),
+    println!(
+        "Found following mapping in {num_steps} steps:\n{:6.4}",
+        &mapping.mat
     );
-    out.save(global_args.output.unwrap_or("out.png".to_string()))?;
-
-    println!("{:#?}", &mapping.mat);
+    if let Some(viz_path) = global_args.viz_output {
+        println!("Saving animation to {viz_path}...");
+    }
+    if let Some(out_path) = global_args.output {
+        let out = warp_image(
+            &mapping,
+            &img2,
+            (h as usize, w as usize),
+            Some(Rgb([128, 0, 0])),
+        );
+        out.save(&out_path)?;
+        println!("Saving warped image to {out_path}...");
+    }
+    if let Some(params_path) = lk_args.params_path {
+        fs::write(params_path, params_history_str).expect("Unable to write params file.");
+    }
     Ok(())
 }
 
@@ -135,45 +151,13 @@ fn main() -> Result<()> {
     match &args.command {
         None => Err(anyhow!("Only `LK` subcommand is currently implemented.")),
         Some(Commands::LK(lk_args)) => match_imgpair(args.clone(), lk_args.clone()),
-        Some(Commands::Warp(_)) => {
-            let map = Mapping::from_matrix(
-                array![
-                    [0.47654548, -0.045553986, 4.847797],
-                    [-0.14852144, 0.6426208, 2.1364543],
-                    [-0.009891294, -0.0021317923, 0.88151735]
-                ],
-                TransformationType::Projective,
-            )
-            .rescale(1.0 / 16.0);
-
-            let img = ImageReader::open("madison2.png")
-                .unwrap()
-                .decode()
-                .unwrap()
-                .into_rgb8();
-            let (w, h) = img.dimensions();
-
-            // Warp with warp_image: Slower but no jaggies
-            let out = warp_image(&map, &img, (h as usize, w as usize), Some(Rgb([128, 0, 0])));
-            out.save("out1.png")?;
-
-            // Warp with warp_array3: hopefully faster...
-            // Note: We cannot use `img.into_ndarray3()` as it results in CHW array
-            let data = Array3::from_shape_vec((h as usize, w as usize, 3), img.into_raw())
-                .unwrap()
-                .mapv(|v| v as f32);
-            let (out, _) = warp_array3(
-                &map,
-                &data,
-                (h as usize, w as usize),
-                Some(array![128.0, 0.0, 0.0]),
-            );
-            let out = array3_to_image::<Rgb<u8>>(out.mapv(|v| v as u8));
-            out.save("out2.png")?;
-            Ok(())
-        }
         Some(Commands::Pano(lk_args)) => {
-            let cube = PhotonCube::load("../photoncube2video/data/binary.npy")?;
+            let [cube_path, ..] = &args.input[..] else {
+                return Err(anyhow!(
+                    "Only one input is required for --input when forming Pano."
+                ));
+            };
+            let cube = PhotonCube::open(cube_path)?;
             let cube_view = cube.view()?;
             let cube_view = cube_view.slice_axis(Axis(0), Slice::new(0, Some(256 * 250), 1));
             let wrt_normalized_idx = 0.5;
@@ -197,13 +181,17 @@ fn main() -> Result<()> {
                         .mapv(|v| (v / (burst_size as f32) * 255.0).round() as u8);
 
                     // Convert to image and resize/transform
-                    let img = array2_to_grayimage(process_colorspad(frame));
-                    let img = resize(
-                        &img,
-                        (img.width() as f32 / lk_args.downscale).round() as u32,
-                        (img.height() as f32 / lk_args.downscale).round() as u32,
-                        FilterType::CatmullRom,
-                    );
+                    let mut img = array2_to_grayimage(process_colorspad(frame));
+
+                    if lk_args.downscale != 1.0 {
+                        img = resize(
+                            &img,
+                            (img.width() as f32 / lk_args.downscale).round() as u32,
+                            (img.height() as f32 / lk_args.downscale).round() as u32,
+                            FilterType::CatmullRom,
+                        );
+                    }
+
                     let img = apply_transform(img, &args.transform);
                     let (w, h) = (img.width() as usize, img.height() as usize);
                     (img, (w, h))

@@ -8,6 +8,7 @@ use image::imageops::{resize, FilterType};
 use image::{io::Reader as ImageReader, Rgb};
 use itertools::Itertools;
 use natord::compare;
+use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
 use crate::ffmpeg::{ensure_ffmpeg, make_video};
 use crate::transforms::annotate;
@@ -44,22 +45,22 @@ pub fn animate_warp(
     }
     create_dir_all(img_dir)?;
 
-    for (i, params) in params_history
-        .iter()
+    params_history
+        .par_iter()
         .step_by(step.unwrap_or(100))
         .enumerate()
-    {
-        let out = warp_image(
-            &Mapping::from_params(params).inverse().rescale(1.0 / scale),
-            &img,
-            (h as usize, w as usize),
-            Some(Rgb([128, 128, 128])),
-        );
+        .for_each(|(i, params)| {
+            let out = warp_image(
+                &Mapping::from_params(params).inverse().rescale(1.0 / scale),
+                &img,
+                (h as usize, w as usize),
+                Some(Rgb([128, 128, 128])),
+            );
 
-        let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
-        out.save(&path)
-            .unwrap_or_else(|_| panic!("Could not save frame at {}!", &path.display()));
-    }
+            let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
+            out.save(&path)
+                .unwrap_or_else(|_| panic!("Could not save frame at {}!", &path.display()));
+        });
 
     ensure_ffmpeg(true);
     make_video(
@@ -83,7 +84,7 @@ pub fn animate_hierarchical_warp(
 ) -> Result<()> {
     let img = ImageReader::open(img_path)?.decode()?.into_rgb8();
     let (w, h) = img.dimensions();
-    let mut i = 0;
+    let mut offset = 0;
 
     if Path::new(&img_dir).is_dir() {
         remove_dir_all(img_dir)?;
@@ -105,20 +106,25 @@ pub fn animate_hierarchical_warp(
             FilterType::CatmullRom,
         );
 
-        for params in params_history.iter().step_by(step.unwrap_or(10)) {
-            let mut out = warp_image(
-                &Mapping::from_params(params).inverse().rescale(1.0 / scale),
-                &resized,
-                (h as usize, w as usize),
-                Some(Rgb([128, 128, 128])),
-            );
-            annotate(&mut out, &format!("Scale: 1/{:.2}", scale));
+        // for params in params_history.iter().step_by(step.unwrap_or(10)) {
+        offset += params_history
+            .par_iter()
+            .step_by(step.unwrap_or(100))
+            .enumerate()
+            .map(|(i, params)| {
+                let mut out = warp_image(
+                    &Mapping::from_params(params).inverse().rescale(1.0 / scale),
+                    &resized,
+                    (h as usize, w as usize),
+                    Some(Rgb([128, 128, 128])),
+                );
+                annotate(&mut out, &format!("Scale: 1/{:.2}", scale));
 
-            let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
-            out.save(&path)
-                .unwrap_or_else(|_| panic!("Could not save frame at {}!", &path.display()));
-            i += 1;
-        }
+                let path = Path::new(&img_dir).join(format!("frame{:06}.png", i + offset));
+                out.save(&path)
+                    .unwrap_or_else(|_| panic!("Could not save frame at {}!", &path.display()));
+            })
+            .count();
     }
 
     ensure_ffmpeg(true);

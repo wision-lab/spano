@@ -9,19 +9,24 @@ use ndarray_npy::{ViewNpyError, ViewNpyExt};
 
 use crate::utils::sorted_glob;
 
-pub struct PhotonCube {
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct PhotonCube<'a> {
+    path: &'a str,
+    bit_depth: u32,
     _storage: PhotonCubeStorage,
 }
 
 // These are needed to keep the underlying object's data in scope
 // otherwise we get a use-after-free error.
 // We use an enum here as either an array OR a memap object is needed.
+#[derive(Debug)]
 enum PhotonCubeStorage {
     ArrayStorage(Array3<u8>),
     MmapStorage(Mmap),
 }
 
-impl PhotonCube {
+impl<'a> PhotonCube<'a> {
     pub fn view(&self) -> Result<ArrayView3<u8>, ViewNpyError> {
         match &self._storage {
             PhotonCubeStorage::ArrayStorage(arr) => Ok(arr.view()),
@@ -29,7 +34,7 @@ impl PhotonCube {
         }
     }
 
-    pub fn load(path_str: &str) -> Result<Self> {
+    pub fn open(path_str: &'a str) -> Result<Self> {
         let path = Path::new(path_str);
 
         if !path.exists() {
@@ -56,6 +61,8 @@ impl PhotonCube {
                 .mapv(|v| v.reverse_bits());
 
             Ok(Self {
+                path: path_str,
+                bit_depth: 1,
                 _storage: PhotonCubeStorage::ArrayStorage(arr),
             })
         } else {
@@ -73,6 +80,8 @@ impl PhotonCube {
             let mmap = unsafe { Mmap::map(&file)? };
 
             Ok(Self {
+                path: path_str,
+                bit_depth: 1,
                 _storage: PhotonCubeStorage::MmapStorage(mmap),
             })
         }

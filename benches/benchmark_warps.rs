@@ -6,7 +6,10 @@ use pprof::criterion::{Output, PProfProfiler};
 use image::io::Reader as ImageReader;
 use ndarray::{array, Array3};
 
-use spano::{distance_transform, warp_array3, Mapping, TransformationType};
+use spano::{
+    blend::distance_transform,
+    warps::{warp_array3, Mapping, TransformationType},
+};
 
 pub fn benchmark_warp_array3(c: &mut Criterion) {
     let img = ImageReader::open("madison1.png")
