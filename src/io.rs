@@ -3,11 +3,20 @@ use std::io::Read;
 use std::path::Path;
 
 use anyhow::{anyhow, Result};
+use image::{
+    imageops::{resize, FilterType},
+    GrayImage,
+};
+use itertools::Itertools;
 use memmap2::Mmap;
-use ndarray::{Array, Array3, ArrayView3};
+use ndarray::{Array, Array3, ArrayView3, Axis, Slice};
 use ndarray_npy::{ViewNpyError, ViewNpyExt};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-use crate::utils::sorted_glob;
+use crate::{
+    transforms::{array2_to_grayimage, process_colorspad, unpack_single, apply_transform},
+    utils::sorted_glob, cli::Transform,
+};
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -69,9 +78,9 @@ impl<'a> PhotonCube<'a> {
             let ext = path.extension().unwrap().to_ascii_lowercase();
 
             if ext != "npy" {
-                // This should probably be a specific IO error?
+                // TODO: This should probably be a specific IO error?
                 return Err(anyhow!(
-                    "Expexted numpy array with extension `npy`, got {:?}.",
+                    "Expected numpy array with `.npy` extension, got {:?}.",
                     ext
                 ));
             }
@@ -85,5 +94,64 @@ impl<'a> PhotonCube<'a> {
                 _storage: PhotonCubeStorage::MmapStorage(mmap),
             })
         }
+    }
+
+    pub fn load(
+        &self,
+        start: isize,
+        stop: isize,
+        step: usize,
+        downscale: f32,
+        transform: &[Transform]
+    ) -> Result<(Vec<GrayImage>, (usize, usize))> {
+        let cube_view = self.view()?;
+        let cube_view = cube_view.slice_axis(Axis(0), Slice::new(start, Some(stop), 1));
+
+        // Create parallel iterator over all chunks of frames and process them
+        let (virtual_exposures, mut sizes): (Vec<_>, Vec<_>) = cube_view
+            .axis_chunks_iter(Axis(0), step)
+            // Make it parallel
+            .into_par_iter()
+            .map(|group| {
+                let (num_frames, _, _) = group.dim();
+                let frame = group
+                    // Iterate over all bitplanes in group
+                    .axis_iter(Axis(0))
+                    // Unpack every frame in group as a f32 array
+                    .map(|bitplane| unpack_single::<f32>(&bitplane, 1).unwrap())
+                    // Sum frames together (.sum not implemented for this type)
+                    .reduce(|acc, e| acc + e)
+                    .unwrap()
+                    // Compute mean values and save as uint8's
+                    .mapv(|v| (v / (num_frames as f32) * 255.0).round() as u8);
+
+                // Convert to image and resize/transform
+                let mut img = array2_to_grayimage(process_colorspad(frame));
+
+                if downscale != 1.0 {
+                    img = resize(
+                        &img,
+                        (img.width() as f32 / downscale).round() as u32,
+                        (img.height() as f32 / downscale).round() as u32,
+                        FilterType::CatmullRom,
+                    );
+                }
+
+                let img = apply_transform(img, &transform);
+                let (w, h) = (img.width() as usize, img.height() as usize);
+                (img, (w, h))
+            })
+            // Force iterator to run to completion to get correct ordering
+            .unzip();
+
+        // Validate all shapes are equal
+        sizes = sizes.into_iter().unique().collect();
+        let [size]: [(usize, usize)] = sizes[..] else {
+            return Err(anyhow!(
+                "Expected all frames to have same shapes but found shapes: {sizes:#?}"
+            ));
+        };
+
+        Ok((virtual_exposures, size))
     }
 }

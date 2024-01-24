@@ -1,6 +1,15 @@
 pub use clap::Parser;
 use clap::{Args, Subcommand, ValueEnum};
 
+fn validate_normalized(p: &str) -> Result<f32, String> {
+    let value = p.parse::<f32>().map_err(|_| "Invalid value")?;
+    if (0.0..=1.0).contains(&value) {
+        Ok(value)
+    } else {
+        Err("Value must be between 0.0 and 1.0".to_string())
+    }
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 /// Register two or more images and animate optimization process.
@@ -66,13 +75,24 @@ pub struct LKArgs {
 
 #[derive(Args, Debug, Clone)]
 pub struct PanoArgs {
+    #[command(flatten)]
+    pub lk_args: LKArgs,
+
     /// Index of binary frame at which to start the preview from (inclusive)
     #[arg(short, long, default_value = None)]
-    pub start: Option<usize>,
+    pub start: Option<isize>,
 
     /// Index of binary frame at which to stop the preview at (exclusive)
     #[arg(short, long, default_value = None)]
-    pub stop: Option<usize>,
+    pub stop: Option<isize>,
+
+    /// Normalized index (i.e [0, 1]) of `with-respect-to` frame, frame with identity warp
+    #[arg(long, default_value_t = 0.5, value_parser=validate_normalized)]
+    pub wrt: f32,
+
+    /// Number of frames to average together
+    #[arg(long, default_value_t = 256)]
+    pub burst_size: usize,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -81,7 +101,7 @@ pub enum Commands {
     LK(LKArgs),
 
     /// Estimate pairwise homographies and interpolate to all frames.
-    Pano(LKArgs),
+    Pano(PanoArgs),
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug)]

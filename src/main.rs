@@ -123,7 +123,7 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
 
     println!(
         "Found following mapping in {num_steps} steps:\n{:6.4}",
-        &mapping.mat
+        &mapping.rescale(1.0 / lk_args.downscale).mat
     );
     if let Some(viz_path) = global_args.viz_output {
         println!("Saving animation to {viz_path}...");
@@ -151,53 +151,25 @@ fn main() -> Result<()> {
     match &args.command {
         None => Err(anyhow!("Only `LK` subcommand is currently implemented.")),
         Some(Commands::LK(lk_args)) => match_imgpair(args.clone(), lk_args.clone()),
-        Some(Commands::Pano(lk_args)) => {
+        Some(Commands::Pano(pano_args)) => {
             let [cube_path, ..] = &args.input[..] else {
                 return Err(anyhow!(
                     "Only one input is required for --input when forming Pano."
                 ));
             };
+
+            // Load and pre-process chunks of frames from photoncube
+            // We unpack the bitplanes, avergae them in groups of `burst_size`, 
+            // Apply color-spad corrections, and optionally downscale.
+            // Any transforms (i.e: flipud) can be applied here too.
             let cube = PhotonCube::open(cube_path)?;
-            let cube_view = cube.view()?;
-            let cube_view = cube_view.slice_axis(Axis(0), Slice::new(0, Some(256 * 250), 1));
-            let wrt_normalized_idx = 0.5;
-            let burst_size = 256;
-
-            // Create parallel iterator over all chunks of frames and process them
-            let (virtual_exposures, mut sizes): (Vec<_>, Vec<_>) = cube_view
-                .axis_chunks_iter(Axis(0), burst_size)
-                // Make it parallel
-                .into_par_iter()
-                .map(|group| {
-                    let frame = group
-                        // Iterate over all bitplanes in group
-                        .axis_iter(Axis(0))
-                        // Unpack every frame in group as a f32 array
-                        .map(|bitplane| unpack_single::<f32>(&bitplane, 1).unwrap())
-                        // Sum frames together (.sum not implemented for this type)
-                        .reduce(|acc, e| acc + e)
-                        .unwrap()
-                        // Compute mean values and save as uint8's
-                        .mapv(|v| (v / (burst_size as f32) * 255.0).round() as u8);
-
-                    // Convert to image and resize/transform
-                    let mut img = array2_to_grayimage(process_colorspad(frame));
-
-                    if lk_args.downscale != 1.0 {
-                        img = resize(
-                            &img,
-                            (img.width() as f32 / lk_args.downscale).round() as u32,
-                            (img.height() as f32 / lk_args.downscale).round() as u32,
-                            FilterType::CatmullRom,
-                        );
-                    }
-
-                    let img = apply_transform(img, &args.transform);
-                    let (w, h) = (img.width() as usize, img.height() as usize);
-                    (img, (w, h))
-                })
-                // Force iterator to run to completion to get correct ordering
-                .unzip();
+            let (virtual_exposures, size) = cube.load(
+                pano_args.start.unwrap_or(0),
+                pano_args.stop.unwrap_or(256 * 250),
+                pano_args.burst_size,
+                pano_args.lk_args.downscale,
+                &args.transform
+            )?;
 
             // Estimate pairwise registration
             let mut mappings: Vec<Mapping> = virtual_exposures
@@ -210,13 +182,13 @@ fn main() -> Result<()> {
                 .tuple_windows()
                 .map(|(src, dst)| {
                     iclk_grayscale(
-                        src,                             // im1_gray
-                        dst,                             // im2_gray
-                        gradients(dst),                  // im2_grad,
-                        Mapping::from_params(&[0.0; 2]), // init_mapping
-                        Some(lk_args.iterations),        // max_iters
-                        Some(lk_args.early_stop),        // stop_early
-                        None,                            // message
+                        src,                                // im1_gray
+                        dst,                                // im2_gray
+                        gradients(dst),                     // im2_grad,
+                        Mapping::from_params(&[0.0; 2]),    // init_mapping
+                        Some(pano_args.lk_args.iterations), // max_iters
+                        Some(pano_args.lk_args.early_stop), // stop_early
+                        None,                               // message
                     )
                     // Drop param_history and rescale transform to full-size
                     .map(|(mapping, _)| {
@@ -241,20 +213,13 @@ fn main() -> Result<()> {
             let wrt_map = Mapping::interpolate_scalar(
                 Array::linspace(0.0, 1.0, virtual_exposures.len()),
                 &mappings,
-                wrt_normalized_idx,
+                pano_args.wrt,
             );
             let mappings: Vec<Mapping> = mappings
                 .iter()
                 .map(|m| m.transform(Some(wrt_map.inverse()), None))
                 .collect();
 
-            // Validate all shapes are equal
-            sizes = sizes.into_iter().unique().collect();
-            let [size]: [(usize, usize)] = sizes[..] else {
-                return Err(anyhow!(
-                    "Expected all frames to have same shapes but found shapes: {sizes:#?}"
-                ));
-            };
             let (extent, offset) = Mapping::maximum_extent(&mappings[..], size);
             let [canvas_w, canvas_h] = extent.to_vec()[..] else {
                 unreachable!("Canvas should have width and height")

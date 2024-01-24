@@ -358,7 +358,7 @@ pub fn warp_array3_into<S, T>(
                 return;
             }
 
-            // Lambda to do bilinear interpolation
+            // Actually do bilinear interpolation
             let left = x.floor();
             let right = left + 1f32;
             let top = y.floor();
@@ -375,6 +375,15 @@ pub fn warp_array3_into<S, T>(
                 get_pix_or_bkg(right, bottom),
             );
 
+            // Currently, the channel dimension cannot be known at compile time
+            // even if it's usually either P::CHANNEL_COUNT, 3 or 1. Letting the compiler know
+            // this info would be done via generic_const_exprs which are currenly unstable. 
+            // Without this we can either:
+            //      1) Collect all channels into a Vec and process that, which incurs a _lot_
+            //         of allocs of small vectors (one per pixel), but allows for whole pixel operations.
+            //      2) Process subpixels in a streaming manner with iterators. Avoids unneccesary
+            //         allocs but constrains us to only subpixel ops (add, mul, etc). 
+            // See: https://github.com/rust-lang/rust/issues/76560
             let value = multizip((tl, tr, bl, br)).map(|(tl, tr, bl, br)| {
                 T::clamp(
                     top_weight * left_weight * f32::from(*tl)
