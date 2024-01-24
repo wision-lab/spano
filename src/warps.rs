@@ -11,6 +11,7 @@ use ndarray_linalg::solve::Inverse;
 use num_traits::AsPrimitive;
 use rayon::iter::{IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 use rayon::slice::ParallelSliceMut;
+use heapless::Vec as hVec;
 
 use crate::transforms::{array3_to_image, ref_image_to_array3};
 
@@ -270,6 +271,13 @@ where
     (out, valid)
 }
 
+/// Main workhorse for warping, use directly if output/points buffers can be 
+/// reused or if something other than simple assignment is needed.
+/// 
+/// func:
+///     Option of a function that describes what to do with sampled pixel.
+///     It takes a mutable reference slice of the `out` buffer and a (possibly longer)
+///     ref slice of the new sampled pixel.       
 pub fn warp_array3_into<S, T>(
     mapping: &Mapping,
     data: &ArrayBase<S, Ix3>,
@@ -277,14 +285,22 @@ pub fn warp_array3_into<S, T>(
     valid: &mut Array2<bool>,
     points: Option<&Array2<usize>>,
     background: Option<Array1<T>>,
-    func: Option<fn(&mut T, T, usize)>,
+    func: Option<fn(&mut[T], &[T])>,
 ) where
     S: RawData<Elem = T> + ndarray::Data,
     T: num_traits::Zero + Clone + Copy + ValueInto<f32> + Send + Sync + Clamp<f32>,
     f32: From<T>,
 {
+    const MAX_CHANNELS: usize = 8;
     let (out_h, out_w, out_c) = out.dim();
     let (data_h, data_w, data_c) = data.dim();
+
+    if out_c > MAX_CHANNELS || data_c > MAX_CHANNELS {
+        panic!(
+            "Maximum supported channel depth is {MAX_CHANNELS}, data \
+            has {data_c} channels and output buffer has {out_c}."
+        );
+    }
 
     // Points is a Nx2 array of xy pairs
     let num_points = out_w * out_h;
@@ -306,7 +322,7 @@ pub fn warp_array3_into<S, T>(
     };
 
     // If no reduction function is present, simply assign to slice
-    let func = func.unwrap_or(|dst, src, _i| *dst = src);
+    let func = func.unwrap_or(|dst, src| dst.iter_mut().zip(src).for_each(|(d, s)| *d = *s));
 
     // If a background is specified, use that, otherwise use zeros
     let (background, padding, has_bkg) = if let Some(bkg) = background {
@@ -351,8 +367,7 @@ pub fn warp_array3_into<S, T>(
 
             if !in_range_x(x) || !in_range_y(y) {
                 if has_bkg {
-                    multizip((out_slice.iter_mut(), bkg_slice, 0..out_c))
-                        .for_each(|(dst, src, i)| func(dst, *src, i));
+                    func(out_slice, bkg_slice);
                 }
                 *valid_slice = false;
                 return;
@@ -383,18 +398,20 @@ pub fn warp_array3_into<S, T>(
             //         of allocs of small vectors (one per pixel), but allows for whole pixel operations.
             //      2) Process subpixels in a streaming manner with iterators. Avoids unneccesary
             //         allocs but constrains us to only subpixel ops (add, mul, etc). 
+            // We choose to collect into a vector for greater flexibility, however we use a heapless 
+            // vectors which saves us from the alloc at the cost of a constant and maximum channel depth. 
+            // The alternative (subpix) was implemented in commit "[main 7ecb546] load photoncube".
             // See: https://github.com/rust-lang/rust/issues/76560
-            let value = multizip((tl, tr, bl, br)).map(|(tl, tr, bl, br)| {
+            let value: hVec<T, MAX_CHANNELS> = multizip((tl, tr, bl, br)).map(|(tl, tr, bl, br)| {
                 T::clamp(
                     top_weight * left_weight * f32::from(*tl)
                         + top_weight * right_weight * f32::from(*tr)
                         + bottom_weight * left_weight * f32::from(*bl)
                         + bottom_weight * right_weight * f32::from(*br),
                 )
-            });
+            }).collect();
 
-            multizip((out_slice.iter_mut(), value, 0..out_c))
-                .for_each(|(dst, src, i)| func(dst, src, i));
+            func(out_slice, &value);
             *valid_slice = true;
         });
 }
