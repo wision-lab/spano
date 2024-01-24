@@ -20,7 +20,7 @@ use ndarray_linalg::solve::Inverse;
 use nshare::ToNdarray2;
 use rayon::prelude::*;
 
-use crate::transforms::grayimage_to_array3;
+use crate::transforms::image_to_array3;
 use crate::warps::{warp_array3_into, Mapping, TransformationType};
 
 /// Compute image gradients using Sobel operator
@@ -95,8 +95,8 @@ where
     let ys = points.column(1).mapv(|v| v as f32);
     let num_points = (w * h) as usize;
 
-    let img1_array = grayimage_to_array3(im1_gray.clone()).mapv(|v| f32::from(v));
-    let img2_pixels = grayimage_to_array3(im2_gray.clone())
+    let img1_array = image_to_array3(im1_gray.clone()).mapv(|v| f32::from(v));
+    let img2_pixels = image_to_array3(im2_gray.clone())
         .mapv(|v| f32::from(v))
         .into_shape((num_points, 1))?;
     let mut warped_im1gray_pixels = Array3::<f32>::zeros((h as usize, w as usize, 1));
@@ -257,7 +257,7 @@ where
 
         // Create mapping from params and use it to sample points from img1
         let mapping = Mapping::from_params(&params);
-        warp_array3_into::<f32>(
+        warp_array3_into::<_, f32>(
             &mapping,
             &img1_array,
             &mut warped_im1gray_pixels,

@@ -23,12 +23,11 @@ mod transforms;
 mod utils;
 mod warps;
 
-use blend::interpolate_bilinear_with_bkg;
 use cli::{Cli, Commands, LKArgs, Parser};
 use ffmpeg::make_video;
 use io::PhotonCube;
 use lk::{gradients, hierarchical_iclk, iclk, iclk_grayscale};
-use transforms::{array3_to_rgbimage, process_colorspad, unpack_single};
+use transforms::{array3_to_image, process_colorspad, unpack_single};
 use utils::{animate_hierarchical_warp, animate_warp};
 use warps::{warp_array3, warp_image, Mapping, TransformationType};
 
@@ -117,8 +116,12 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
         mapping
     };
 
-    let get_pixel = |x, y| interpolate_bilinear_with_bkg(&img2, x, y, Rgb([128, 0, 0]));
-    let out = warp_image(&mapping, get_pixel, w as usize, h as usize);
+    let out = warp_image(
+        &mapping,
+        &img2,
+        (h as usize, w as usize),
+        Some(Rgb([128, 0, 0])),
+    );
     out.save(global_args.output.unwrap_or("out.png".to_string()))?;
 
     println!("{:#?}", &mapping.mat);
@@ -151,8 +154,7 @@ fn main() -> Result<()> {
             let (w, h) = img.dimensions();
 
             // Warp with warp_image: Slower but no jaggies
-            let get_pixel = |x, y| interpolate_bilinear_with_bkg(&img, x, y, Rgb([128, 0, 0]));
-            let out = warp_image(&map, get_pixel, w as usize, h as usize);
+            let out = warp_image(&map, &img, (h as usize, w as usize), Some(Rgb([128, 0, 0])));
             out.save("out1.png")?;
 
             // Warp with warp_array3: hopefully faster...
@@ -163,10 +165,10 @@ fn main() -> Result<()> {
             let (out, _) = warp_array3(
                 &map,
                 &data,
-                (h as usize, w as usize, 3),
+                (h as usize, w as usize),
                 Some(array![128.0, 0.0, 0.0]),
             );
-            let out = array3_to_rgbimage::<Rgb<u8>>(out.mapv(|v| v as u8));
+            let out = array3_to_image::<Rgb<u8>>(out.mapv(|v| v as u8));
             out.save("out2.png")?;
             Ok(())
         }
@@ -272,13 +274,11 @@ fn main() -> Result<()> {
             println!("{:}, {:}, {:?}", &canvas_w, &canvas_h, &offset);
 
             for (i, map) in mappings.iter().step_by(args.viz_step).enumerate() {
-                let get_pixel =
-                    |x, y| interpolate_bilinear_with_bkg(&virtual_exposures[i], x, y, Luma([128]));
                 let img = warp_image(
                     &map.transform(None, Some(offset.clone())),
-                    get_pixel,
-                    canvas_w.ceil() as usize,
-                    canvas_h.ceil() as usize,
+                    &virtual_exposures[i],
+                    (canvas_h.ceil() as usize, canvas_w.ceil() as usize),
+                    Some(Luma([128])),
                 );
                 // let img = polygon_distance_transform(
                 //     &map.corners(size), (canvas_h.ceil() as usize, canvas_w.ceil() as usize)

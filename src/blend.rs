@@ -1,74 +1,7 @@
-use conv::ValueInto;
-use image::{GenericImageView, Pixel};
-use imageproc::{
-    definitions::{Clamp, Image},
-    math::cast,
-};
 use ndarray::{azip, s, stack, Array, Array1, Array2, Axis};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use crate::Mapping;
-
-/// Again, this is almost lifted verbatum from:
-///     https://docs.rs/imageproc/0.23.0/src/imageproc/geometric_transformations.rs.html#681
-/// But alas, this function is not declared as public so we can't just import it...
-pub fn interpolate_bilinear_with_bkg<P>(image: &Image<P>, x: f32, y: f32, background: P) -> P
-where
-    P: Pixel,
-    <P as Pixel>::Subpixel: ValueInto<f32> + Clamp<f32>,
-{
-    let (width, height) = image.dimensions();
-
-    let get_pix_or_bkg = |x: f32, y: f32| {
-        if x < 0f32 || x >= width as f32 || y < 0f32 || y >= height as f32 {
-            background
-        } else {
-            unsafe { image.unsafe_get_pixel(x as u32, y as u32) }
-        }
-    };
-
-    let left = x.floor();
-    let right = left + 1f32;
-    let top = y.floor();
-    let bottom = top + 1f32;
-    let right_weight = x - left;
-    let bottom_weight = y - top;
-
-    // Do the interpolation
-    let (tl, tr, bl, br) = (
-        get_pix_or_bkg(left, top),
-        get_pix_or_bkg(right, top),
-        get_pix_or_bkg(left, bottom),
-        get_pix_or_bkg(right, bottom),
-    );
-    blend_bilinear(tl, tr, bl, br, right_weight, bottom_weight)
-}
-
-/// Again, this is lifted almost verbatum from the imageproc crate...
-pub fn blend_bilinear<P>(
-    top_left: P,
-    top_right: P,
-    bottom_left: P,
-    bottom_right: P,
-    right_weight: f32,
-    bottom_weight: f32,
-) -> P
-where
-    P: Pixel,
-    P::Subpixel: ValueInto<f32> + Clamp<f32>,
-{
-    let top = top_left.map2(&top_right, |u, v| {
-        P::Subpixel::clamp((1f32 - right_weight) * cast(u) + right_weight * cast(v))
-    });
-
-    let bottom = bottom_left.map2(&bottom_right, |u, v| {
-        P::Subpixel::clamp((1f32 - right_weight) * cast(u) + right_weight * cast(v))
-    });
-
-    top.map2(&bottom, |u, v| {
-        P::Subpixel::clamp((1f32 - bottom_weight) * cast(u) + bottom_weight * cast(v))
-    })
-}
 
 /// Computes normalized and clipped distance transform (bwdist) for rectangle that fills image
 pub fn distance_transform(size: (usize, usize)) -> Array2<f32> {

@@ -1,16 +1,18 @@
 use std::ops::DivAssign;
 
 use conv::ValueInto;
-use image::{ImageBuffer, Pixel};
+use image::Pixel;
 use imageproc::definitions::{Clamp, Image};
 use itertools::multizip;
-use ndarray::{array, concatenate, s, Array1, Array2, Array3, Axis};
+use ndarray::{array, concatenate, s, Array1, Array2, Array3, ArrayBase, Axis, Ix3, RawData};
 use ndarray::{stack, Array};
 use ndarray_interp::interp1d::{CubicSpline, Interp1DBuilder};
 use ndarray_linalg::solve::Inverse;
 use num_traits::AsPrimitive;
 use rayon::iter::{IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 use rayon::slice::ParallelSliceMut;
+
+use crate::transforms::{array3_to_image, ref_image_to_array3};
 
 #[derive(Copy, Clone, Debug)]
 pub enum TransformationType {
@@ -231,70 +233,54 @@ impl Mapping {
     }
 }
 
-pub fn warp_image<P, Fi>(mapping: &Mapping, get_pixel: Fi, width: usize, height: usize) -> Image<P>
+pub fn warp_image<P>(
+    mapping: &Mapping,
+    data: &Image<P>,
+    out_size: (usize, usize),
+    background: Option<P>,
+) -> Image<P>
 where
-    P: Pixel + Send + Sync,
-    <P as Pixel>::Subpixel: Send + Sync,
-    <P as Pixel>::Subpixel: ValueInto<f32> + Clamp<f32>,
-    Fi: Fn(f32, f32) -> P + Send + Sync,
+    P: Pixel,
+    <P as Pixel>::Subpixel:
+        num_traits::Zero + Clone + Copy + ValueInto<f32> + Send + Sync + Clamp<f32>,
+    f32: From<<P as Pixel>::Subpixel>,
 {
-    // Points is a Nx2 array of xy pairs
-    let points = Array::from_shape_fn((width * height, 2), |(i, j)| {
-        if j == 0 {
-            i % width
-        } else {
-            i / width
-        }
-    });
-
-    // Warp all points and determine indices of in-bound ones
-    let warpd = mapping.warp_points(&points);
-    let xs = warpd.column(0);
-    let ys = warpd.column(1);
-
-    // Create and return image buffer
-    let mut out = ImageBuffer::new(width as u32, height as u32);
-    (
-        out.par_chunks_mut(P::CHANNEL_COUNT as usize),
-        xs.axis_iter(Axis(0)),
-        ys.axis_iter(Axis(0)),
-    )
-        .into_par_iter()
-        .map(|(pixel, x, y)| {
-            *P::from_slice_mut(pixel) = get_pixel(*x.into_scalar(), *y.into_scalar());
-        })
-        .count();
-
-    out
+    let arr = ref_image_to_array3(data);
+    let background = background.map(|v| Array1::from_iter(v.channels().to_owned()));
+    let (out, _) = warp_array3(mapping, &arr, out_size, background);
+    array3_to_image(out)
 }
 
-pub fn warp_array3<T>(
+pub fn warp_array3<S, T>(
     mapping: &Mapping,
-    data: &Array3<T>,
-    out_size: (usize, usize, usize),
+    data: &ArrayBase<S, Ix3>,
+    out_size: (usize, usize),
     background: Option<Array1<T>>,
 ) -> (Array3<T>, Array2<bool>)
 where
-    T: num_traits::Zero + Clone + Copy + From<f32> + Send + Sync,
+    S: RawData<Elem = T> + ndarray::Data,
+    T: num_traits::Zero + Clone + Copy + ValueInto<f32> + Send + Sync + Clamp<f32>,
     f32: From<T>,
 {
-    let (h, w, _) = out_size;
-    let mut out = Array3::zeros(out_size);
+    let (h, w) = out_size;
+    let (_, _, c) = data.dim();
+    let mut out = Array3::zeros((h, w, c));
     let mut valid = Array2::from_elem((h, w), false);
     warp_array3_into(mapping, data, &mut out, &mut valid, None, background, None);
     (out, valid)
 }
 
-pub fn warp_array3_into<T>(
+pub fn warp_array3_into<S, T>(
     mapping: &Mapping,
-    data: &Array3<T>,
+    data: &ArrayBase<S, Ix3>,
     out: &mut Array3<T>,
     valid: &mut Array2<bool>,
     points: Option<&Array2<usize>>,
     background: Option<Array1<T>>,
     func: Option<fn(&mut T, T, usize)>,
 ) where
-    T: num_traits::Zero + Clone + Copy + From<f32> + Send + Sync,
+    S: RawData<Elem = T> + ndarray::Data,
+    T: num_traits::Zero + Clone + Copy + ValueInto<f32> + Send + Sync + Clamp<f32>,
     f32: From<T>,
 {
     let (out_h, out_w, out_c) = out.dim();
@@ -390,7 +376,7 @@ pub fn warp_array3_into<T>(
             );
 
             let value = multizip((tl, tr, bl, br)).map(|(tl, tr, bl, br)| {
-                T::from(
+                T::clamp(
                     top_weight * left_weight * f32::from(*tl)
                         + top_weight * right_weight * f32::from(*tr)
                         + bottom_weight * left_weight * f32::from(*bl)

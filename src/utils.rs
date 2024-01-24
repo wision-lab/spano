@@ -9,7 +9,6 @@ use image::{io::Reader as ImageReader, Rgb};
 use itertools::Itertools;
 use natord::compare;
 
-use crate::blend::interpolate_bilinear_with_bkg;
 use crate::ffmpeg::{ensure_ffmpeg, make_video};
 use crate::transforms::annotate;
 use crate::warps::{warp_image, Mapping};
@@ -50,12 +49,11 @@ pub fn animate_warp(
         .step_by(step.unwrap_or(100))
         .enumerate()
     {
-        let get_pixel = |x, y| interpolate_bilinear_with_bkg(&img, x, y, Rgb([128, 128, 128]));
         let out = warp_image(
             &Mapping::from_params(params).inverse().rescale(1.0 / scale),
-            get_pixel,
-            w as usize,
-            h as usize,
+            &img,
+            (h as usize, w as usize),
+            Some(Rgb([128, 128, 128])),
         );
 
         let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
@@ -106,14 +104,13 @@ pub fn animate_hierarchical_warp(
             h,
             FilterType::CatmullRom,
         );
-        let get_pixel = |x, y| interpolate_bilinear_with_bkg(&resized, x, y, Rgb([128, 128, 128]));
 
         for params in params_history.iter().step_by(step.unwrap_or(10)) {
             let mut out = warp_image(
                 &Mapping::from_params(params).inverse().rescale(1.0 / scale),
-                get_pixel,
-                w as usize,
-                h as usize,
+                &resized,
+                (h as usize, w as usize),
+                Some(Rgb([128, 128, 128])),
             );
             annotate(&mut out, &format!("Scale: 1/{:.2}", scale));
 

@@ -8,7 +8,7 @@ use rusttype::{Font, Scale};
 use image::{imageops, ImageBuffer, Luma, Pixel, Rgb, RgbImage};
 use imageproc::drawing::{draw_text_mut, text_size};
 
-use ndarray::{s, Array, Array2, Array3, ArrayView2, Axis, Slice};
+use ndarray::{s, Array, Array2, Array3, ArrayView2, ArrayView3, Axis, Slice};
 use ndarray_stats::{interpolate::Linear, QuantileExt};
 use noisy_float::types::n64;
 use num_traits::AsPrimitive;
@@ -42,6 +42,7 @@ where
     Ok(unpacked_bitplane)
 }
 
+// Replaces `nshare::ToImageLuma` (which isn't actually implemented?!)
 pub fn array2_to_grayimage<T>(frame: Array2<T>) -> ImageBuffer<Luma<T>, Vec<T>>
 where
     T: image::Primitive,
@@ -62,24 +63,12 @@ where
     Array2::from_shape_vec((im.height() as usize, im.width() as usize), im.into_raw()).unwrap()
 }
 
-// Same as above but with one channel
-pub fn grayimage_to_array3<T>(im: ImageBuffer<Luma<T>, Vec<T>>) -> Array3<T>
-where
-    T: image::Primitive,
-{
-    Array3::from_shape_vec(
-        (im.height() as usize, im.width() as usize, 1),
-        im.into_raw(),
-    )
-    .unwrap()
-}
-
 // Given an NDarray of HxWxC, convert it to an RGBImage (C must equal 3)
 // Note: Contrary to link below, we use HWC *not* CHW.
 //       This means we cannot use `nshare::ToNdarray3`
 //       as it converts an image to CHW format.
 // https://stackoverflow.com/questions/56762026/how-to-save-ndarray-in-rust-as-image
-pub fn array3_to_rgbimage<P>(arr: Array3<P::Subpixel>) -> ImageBuffer<P, Vec<P::Subpixel>>
+pub fn array3_to_image<P>(arr: Array3<P::Subpixel>) -> ImageBuffer<P, Vec<P::Subpixel>>
 where
     P: image::Pixel,
 {
@@ -92,13 +81,33 @@ where
 }
 
 // Alternative to `nshare::ToNdarray3` which returns HWC array
-pub fn rgbimage_to_array3<P>(im: ImageBuffer<P, Vec<P::Subpixel>>) -> Array3<P::Subpixel>
+pub fn image_to_array3<P>(im: ImageBuffer<P, Vec<P::Subpixel>>) -> Array3<P::Subpixel>
 where
     P: image::Pixel,
 {
     Array3::from_shape_vec(
-        (im.height() as usize, im.width() as usize, 3),
+        (
+            im.height() as usize,
+            im.width() as usize,
+            P::CHANNEL_COUNT as usize,
+        ),
         im.into_raw(),
+    )
+    .unwrap()
+}
+
+// Alternative to `nshare::RefNdarray3` which returns HWC array
+pub fn ref_image_to_array3<P>(im: &ImageBuffer<P, Vec<P::Subpixel>>) -> ArrayView3<P::Subpixel>
+where
+    P: image::Pixel,
+{
+    ArrayView3::from_shape(
+        (
+            im.height() as usize,
+            im.width() as usize,
+            P::CHANNEL_COUNT as usize,
+        ),
+        im,
     )
     .unwrap()
 }
