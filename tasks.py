@@ -63,27 +63,33 @@ class Mapping:
                 raise ValueError
 
 
-@task()
+@task(iterable=["path"])
 def plot(_, path):
-    with open(path, "r") as f:
-        data = json.load(f)
+    fig, axes = plt.subplots(nrows=1, ncols=len(path), sharey=True)
 
-    if isinstance(data, list):
-        plt.plot(data)
-    else:
-        data = {
-            int(k): [Mapping.from_params(i).rescale(1 / int(k)).get_params() for i in v]
-            for k, v in data.items()
-        }
-        data = sorted(data.items(), reverse=True)
-        steps = np.cumsum([0] + [len(v) for _, v in data])
+    for p, ax in zip(path, axes):
+        ax.set_title(Path(p).name)
 
-        for offset, (k, v) in zip(steps, data):
-            for i, vi in enumerate(np.array(v).T):
-                label = i if k == data[0][0] else ""
-                plt.plot(np.arange(len(v)) + offset, vi, c=f"C{i}", label=label)
+        with open(p, "r") as f:
+            data = json.load(f)
 
-        for offset in steps[1:]:
-            plt.axvline(x=offset, c="k", ls="--", alpha=0.2)
-        plt.legend()
+        if isinstance(data, list):
+            for i, v in enumerate(np.array(data).T):
+                ax.plot(v, label=i, c=f"C{i}")
+        else:
+            data = {
+                int(k): [Mapping.from_params(i).rescale(1 / int(k)).get_params() for i in v]
+                for k, v in data.items()
+            }
+            data = sorted(data.items(), reverse=True)
+            steps = np.cumsum([0] + [len(v) for _, v in data])
+
+            for offset, (k, v) in zip(steps, data):
+                for i, vi in enumerate(np.array(v).T):
+                    label = i if k == data[0][0] else ""
+                    ax.plot(np.arange(len(v)) + offset, vi, c=f"C{i}", label=label)
+
+            for offset in steps[1:]:
+                ax.axvline(x=offset, c="k", ls="--", alpha=0.2)
+    plt.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
     plt.show()
