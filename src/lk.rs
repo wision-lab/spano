@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use anyhow::{anyhow, Result};
 use conv::{ValueFrom, ValueInto};
@@ -44,6 +44,7 @@ pub fn iclk<P>(
     init_mapping: Mapping,
     max_iters: Option<i32>,
     stop_early: Option<f32>,
+    patience: Option<usize>,
 ) -> Result<(Mapping, Vec<Vec<f32>>)>
 where
     P: Pixel + Send + Sync,
@@ -62,6 +63,7 @@ where
         init_mapping,
         max_iters,
         stop_early,
+        patience,
         Some(""),
     )
 }
@@ -74,6 +76,7 @@ pub fn iclk_grayscale<T>(
     init_mapping: Mapping,
     max_iters: Option<i32>,
     stop_early: Option<f32>,
+    patience: Option<usize>,
     message: Option<&str>,
 ) -> Result<(Mapping, Vec<Vec<f32>>)>
 where
@@ -105,6 +108,7 @@ where
 
     let mut params_history = vec![];
     params_history.push(params.clone());
+    let mut dps: VecDeque<Array2<f32>> = VecDeque::with_capacity(patience.unwrap_or(10));
 
     // These can be cached, so we init them before the main loop
     let (steepest_descent_ic_t, hessian_inv) = match init_mapping.kind {
@@ -297,8 +301,15 @@ where
             .get_params();
         params_history.push(params.clone());
 
-        // Early exit if dp is small
-        if Array2::<f32>::zeros((params.len(), 1)).abs_diff_eq(&dp, stop_early.unwrap_or(1e-3)) {
+        // Push back dp update, pop old one if deque is full
+        if i >= patience.unwrap_or(10) as i32 {
+            dps.pop_front();
+        }
+        dps.push_back(dp.clone());
+
+        // Early exit if average dp is small
+        let avg_dp = &dps.iter().fold(Array2::<f32>::zeros((params.len(), 1)), |acc, e| acc + e) / dps.len() as f32;
+        if Array2::<f32>::zeros((params.len(), 1)).abs_diff_eq(&avg_dp, stop_early.unwrap_or(1e-3)) {
             break;
         }
     }
@@ -315,6 +326,7 @@ pub fn hierarchical_iclk<P>(
     min_dimensions: (u32, u32),
     max_levels: u32,
     stop_early: Option<f32>,
+    patience: Option<usize>,
 ) -> Result<(Mapping, HashMap<u32, Vec<Vec<f32>>>)>
 where
     P: Pixel + Send + Sync,
@@ -350,6 +362,7 @@ where
             mapping,
             max_iters,
             stop_early,
+            patience,
             Some(&format!("Using scale 1/{:}", &current_scale)),
         )?;
 
@@ -372,6 +385,7 @@ pub fn pairwise_iclk(
     scale: f32,
     iterations: i32,
     early_stop: f32,
+    patience: usize,
     wrt: Option<f32>,
     message: Option<&str>,
 ) -> Result<Vec<Mapping>> {
@@ -398,6 +412,7 @@ pub fn pairwise_iclk(
                 Mapping::from_params(&[0.0; 2]), // init_mapping
                 Some(iterations),                // max_iters
                 Some(early_stop),                // stop_early
+                Some(patience),                  // patience
                 None,                            // message
             )
             // Drop param_history and rescale transform to full-size

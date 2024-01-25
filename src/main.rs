@@ -81,6 +81,7 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
             Mapping::from_params(&[0.0; 8]),
             Some(lk_args.iterations),
             Some(lk_args.early_stop),
+            Some(10)
         )?;
         let num_steps = params_history.len();
 
@@ -108,6 +109,7 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
             (25, 25),
             lk_args.max_lvls,
             Some(lk_args.early_stop),
+            Some(10)
         )?;
         let num_steps = params_history.values().map(|v| v.len()).sum();
 
@@ -184,6 +186,7 @@ fn main() -> Result<()> {
                 1.0,
                 pano_args.lk_args.iterations,
                 pano_args.lk_args.early_stop,
+                10,
                 Some(pano_args.wrt),
                 Some("Lvl 1:"),
             )?;
