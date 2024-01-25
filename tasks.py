@@ -76,9 +76,9 @@ def plot(_, path):
             for k, v in data.items()
         }
         data = sorted(data.items(), reverse=True)
-        steps = [0] + [len(v) for _, v in data]
+        steps = np.cumsum([0] + [len(v) for _, v in data])
 
-        for offset, (k, v) in zip(np.cumsum(steps), data):
+        for offset, (k, v) in zip(steps, data):
             for i, vi in enumerate(np.array(v).T):
                 label = i if k == data[0][0] else ""
                 plt.plot(np.arange(len(v)) + offset, vi, c=f"C{i}", label=label)
