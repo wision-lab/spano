@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use conv::{ValueFrom, ValueInto};
 use image::imageops::colorops::grayscale;
 use image::imageops::{resize, FilterType};
-use image::{Luma, Pixel, Primitive};
+use image::{GrayImage, Luma, Pixel, Primitive};
 use imageproc::{
     definitions::{Clamp, Image},
     filter::filter3x3,
@@ -12,7 +12,7 @@ use imageproc::{
 };
 
 use indicatif::{ProgressBar, ProgressStyle};
-use itertools::izip;
+use itertools::{chain, izip};
 use ndarray::{
     array, par_azip, s, stack, Array, Array1, Array2, Array3, ArrayBase, ArrayView, Axis, NewAxis,
 };
@@ -364,6 +364,75 @@ where
     }
 
     Ok((mapping, all_params_history))
+}
+
+/// Estimate pairwise registration using single level iclk
+pub fn pairwise_iclk(
+    frames: &Vec<GrayImage>,
+    scale: f32,
+    iterations: i32,
+    early_stop: f32,
+    wrt: Option<f32>,
+    message: Option<&str>,
+) -> Result<Vec<Mapping>> {
+    // Conditionally setup a pbar
+    let pbar = if let Some(msg) = message {
+        ProgressBar::new((frames.len() - 1) as u64)
+            .with_style(ProgressStyle::with_template(
+                "{msg} ETA:{eta}, [{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>6}/{len:6}",
+            )?)
+            .with_message(msg.to_owned())
+    } else {
+        ProgressBar::hidden()
+    };
+
+    // Iterate over sliding window of pairwise frames (in parallel!)
+    let mappings: Vec<Mapping> = frames
+        .par_windows(2)
+        .map(|window| {
+            pbar.inc(1);
+            iclk_grayscale(
+                &window[0],                      // im1_gray
+                &window[1],                      // im2_gray
+                gradients(&window[1]),           // im2_grad,
+                Mapping::from_params(&[0.0; 2]), // init_mapping
+                Some(iterations),                // max_iters
+                Some(early_stop),                // stop_early
+                None,                            // message
+            )
+            // Drop param_history and rescale transform to full-size
+            .map(|(mapping, _)| mapping.rescale(scale))
+        })
+        // Collect to force reorder
+        .collect::<Result<Vec<_>>>()?;
+
+    // If wrt is None, just return raw pairwise warps (N-1 in total)
+    if wrt.is_none() {
+        return Ok(mappings);
+    }
+
+    // Otherwise we compose/accumulate them all together and apply wrt correction
+    // Add in an identity warp to the start to have one warp per frame
+    // TODO: maybe impl Copy to minimize the clones here...
+    // TODO: Can we avoid the above collect and cumulatively compose in parallel?
+    let mappings: Vec<_> = chain([Mapping::identity()], mappings)
+        .scan(Mapping::identity(), |acc, x| {
+            *acc = acc.transform(None, Some(x.clone()));
+            Some(acc.clone())
+        })
+        .collect();
+
+    // Find wrt warp and undo it
+    let wrt_map = Mapping::interpolate_scalar(
+        Array::linspace(0.0, 1.0, frames.len()),
+        &mappings,
+        wrt.unwrap(),
+    );
+    let mappings: Vec<Mapping> = mappings
+        .iter()
+        .map(|m| m.transform(Some(wrt_map.inverse()), None))
+        .collect();
+    Ok(mappings)
 }
 
 pub fn img_pyramid<P>(im: &Image<P>, min_dimensions: (u32, u32), max_levels: u32) -> Vec<Image<P>>

@@ -3,9 +3,12 @@ use std::fs::{create_dir_all, remove_dir_all};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use conv::ValueInto;
 use glob::glob;
 use image::imageops::{resize, FilterType};
 use image::{io::Reader as ImageReader, Rgb};
+use image::{EncodableLayout, Pixel, PixelWithColorType};
+use imageproc::definitions::{Clamp, Image};
 use itertools::Itertools;
 use natord::compare;
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
@@ -40,6 +43,7 @@ pub fn animate_warp(
     let img = ImageReader::open(img_path)?.decode()?.into_rgb8();
     let (w, h) = img.dimensions();
 
+    // Clear dir, and make sure it exists
     if Path::new(&img_dir).is_dir() {
         remove_dir_all(img_dir)?;
     }
@@ -86,6 +90,7 @@ pub fn animate_hierarchical_warp(
     let (w, h) = img.dimensions();
     let mut offset = 0;
 
+    // Clear dir, and make sure it exists
     if Path::new(&img_dir).is_dir() {
         remove_dir_all(img_dir)?;
     }
@@ -126,6 +131,65 @@ pub fn animate_hierarchical_warp(
             })
             .count();
     }
+
+    ensure_ffmpeg(true);
+    make_video(
+        Path::new(&img_dir).join("frame%06d.png").to_str().unwrap(),
+        out_path.unwrap_or("out.mp4"),
+        fps.unwrap_or(25u64),
+        0,
+        None,
+    );
+    Ok(())
+}
+
+pub fn stabilized_video<P>(
+    mappings: &[Mapping],
+    frames: &[Image<P>],
+    img_dir: &str,
+    fps: Option<u64>,
+    step: Option<usize>,
+    out_path: Option<&str>,
+) -> Result<()>
+where
+    P: Pixel + PixelWithColorType + Send + Sync,
+    <P as Pixel>::Subpixel:
+        num_traits::Zero + Clone + Copy + ValueInto<f32> + Send + Sync + Clamp<f32>,
+    [<P as Pixel>::Subpixel]: EncodableLayout,
+    f32: From<<P as Pixel>::Subpixel>,
+{
+    // Clear dir, and make sure it exists
+    if Path::new(&img_dir).is_dir() {
+        remove_dir_all(img_dir)?;
+    }
+    create_dir_all(img_dir)?;
+
+    let sizes: Vec<_> = frames
+        .iter()
+        .map(|f| (f.width() as usize, f.height() as usize))
+        .unique()
+        .collect();
+    let (extent, offset) = Mapping::maximum_extent(mappings, &sizes[..]);
+    let [canvas_w, canvas_h] = extent.to_vec()[..] else {
+        unreachable!("Canvas should have width and height")
+    };
+
+    mappings
+        .par_iter()
+        .step_by(step.unwrap_or(100))
+        .enumerate()
+        .for_each(|(i, map)| {
+            let img = warp_image(
+                &map.transform(None, Some(offset.clone())),
+                &frames[i],
+                (canvas_h.ceil() as usize, canvas_w.ceil() as usize),
+                None,
+            );
+
+            let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
+            img.save(&path)
+                .unwrap_or_else(|_| panic!("Could not save frame at {}!", &path.display()));
+        });
 
     ensure_ffmpeg(true);
     make_video(

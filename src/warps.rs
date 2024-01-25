@@ -1,6 +1,7 @@
 use std::ops::DivAssign;
 
 use conv::ValueInto;
+use heapless::Vec as hVec;
 use image::Pixel;
 use imageproc::definitions::{Clamp, Image};
 use itertools::multizip;
@@ -11,7 +12,6 @@ use ndarray_linalg::solve::Inverse;
 use num_traits::AsPrimitive;
 use rayon::iter::{IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 use rayon::slice::ParallelSliceMut;
-use heapless::Vec as hVec;
 
 use crate::transforms::{array3_to_image, ref_image_to_array3};
 
@@ -183,9 +183,25 @@ impl Mapping {
         (min_coords, max_coords)
     }
 
-    pub fn maximum_extent(maps: &[Self], size: (usize, usize)) -> (Array1<f32>, Self) {
-        let (min_coords, max_coords): (Vec<Array1<f32>>, Vec<Array1<f32>>) =
-            maps.iter().map(|m| m.extent(size)).unzip();
+    /// Get maximum extent of a collection of warps and theirs sizes.
+    /// Sizes are expected to be (x, y) pairs, _not_ (h, w)/(y, x). Similarly extent will be (x, y).
+    /// Maps and Sizes might be different lengths:
+    ///     - Maybe all warps operate on a single size
+    ///     - If warps are the same, this is just max size
+    pub fn maximum_extent(maps: &[Self], sizes: &[(usize, usize)]) -> (Array1<f32>, Self) {
+        // We detect which is longer and cycle the other one.
+        let (min_coords, max_coords): (Vec<_>, Vec<_>) = if maps.len() >= sizes.len() {
+            maps.iter()
+                .zip(sizes.iter().cycle())
+                .map(|(m, s)| m.extent(*s))
+                .unzip()
+        } else {
+            sizes
+                .iter()
+                .zip(maps.iter().cycle())
+                .map(|(s, m)| m.extent(*s))
+                .unzip()
+        };
 
         let min_coords: Vec<_> = min_coords.iter().map(|arr| arr.view()).collect();
         let min_coords = stack(Axis(0), &min_coords[..])
@@ -206,7 +222,7 @@ impl Mapping {
         (extent, offset)
     }
 
-    pub fn interpolate_array(ts: Array1<f32>, maps: &Vec<Self>, query: Array1<f32>) -> Vec<Self> {
+    pub fn interpolate_array(ts: Array1<f32>, maps: &[Self], query: Array1<f32>) -> Vec<Self> {
         let params = Array2::from_shape_vec(
             (maps.len(), 8),
             maps.iter().flat_map(|m| m.get_params_full()).collect(),
@@ -226,7 +242,7 @@ impl Mapping {
             .collect()
     }
 
-    pub fn interpolate_scalar(ts: Array1<f32>, maps: &Vec<Self>, query: f32) -> Self {
+    pub fn interpolate_scalar(ts: Array1<f32>, maps: &[Self], query: f32) -> Self {
         Self::interpolate_array(ts, maps, array![query])
             .into_iter()
             .nth(0)
@@ -271,13 +287,14 @@ where
     (out, valid)
 }
 
-/// Main workhorse for warping, use directly if output/points buffers can be 
+/// Main workhorse for warping, use directly if output/points buffers can be
 /// reused or if something other than simple assignment is needed.
-/// 
+///
 /// func:
 ///     Option of a function that describes what to do with sampled pixel.
 ///     It takes a mutable reference slice of the `out` buffer and a (possibly longer)
-///     ref slice of the new sampled pixel.       
+///     ref slice of the new sampled pixel.    
+#[allow(clippy::type_complexity)]
 pub fn warp_array3_into<S, T>(
     mapping: &Mapping,
     data: &ArrayBase<S, Ix3>,
@@ -285,7 +302,7 @@ pub fn warp_array3_into<S, T>(
     valid: &mut Array2<bool>,
     points: Option<&Array2<usize>>,
     background: Option<Array1<T>>,
-    func: Option<fn(&mut[T], &[T])>,
+    func: Option<fn(&mut [T], &[T])>,
 ) where
     S: RawData<Elem = T> + ndarray::Data,
     T: num_traits::Zero + Clone + Copy + ValueInto<f32> + Send + Sync + Clamp<f32>,
@@ -392,24 +409,26 @@ pub fn warp_array3_into<S, T>(
 
             // Currently, the channel dimension cannot be known at compile time
             // even if it's usually either P::CHANNEL_COUNT, 3 or 1. Letting the compiler know
-            // this info would be done via generic_const_exprs which are currenly unstable. 
+            // this info would be done via generic_const_exprs which are currenly unstable.
             // Without this we can either:
             //      1) Collect all channels into a Vec and process that, which incurs a _lot_
             //         of allocs of small vectors (one per pixel), but allows for whole pixel operations.
             //      2) Process subpixels in a streaming manner with iterators. Avoids unneccesary
-            //         allocs but constrains us to only subpixel ops (add, mul, etc). 
-            // We choose to collect into a vector for greater flexibility, however we use a heapless 
-            // vectors which saves us from the alloc at the cost of a constant and maximum channel depth. 
+            //         allocs but constrains us to only subpixel ops (add, mul, etc).
+            // We choose to collect into a vector for greater flexibility, however we use a heapless
+            // vectors which saves us from the alloc at the cost of a constant and maximum channel depth.
             // The alternative (subpix) was implemented in commit "[main 7ecb546] load photoncube".
             // See: https://github.com/rust-lang/rust/issues/76560
-            let value: hVec<T, MAX_CHANNELS> = multizip((tl, tr, bl, br)).map(|(tl, tr, bl, br)| {
-                T::clamp(
-                    top_weight * left_weight * f32::from(*tl)
-                        + top_weight * right_weight * f32::from(*tr)
-                        + bottom_weight * left_weight * f32::from(*bl)
-                        + bottom_weight * right_weight * f32::from(*br),
-                )
-            }).collect();
+            let value: hVec<T, MAX_CHANNELS> = multizip((tl, tr, bl, br))
+                .map(|(tl, tr, bl, br)| {
+                    T::clamp(
+                        top_weight * left_weight * f32::from(*tl)
+                            + top_weight * right_weight * f32::from(*tr)
+                            + bottom_weight * left_weight * f32::from(*bl)
+                            + bottom_weight * right_weight * f32::from(*br),
+                    )
+                })
+                .collect();
 
             func(out_slice, &value);
             *valid_slice = true;

@@ -7,15 +7,15 @@ use image::{
     imageops::{resize, FilterType},
     GrayImage,
 };
-use itertools::Itertools;
 use memmap2::Mmap;
 use ndarray::{Array, Array3, ArrayView3, Axis, Slice};
 use ndarray_npy::{ViewNpyError, ViewNpyExt};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use crate::{
-    transforms::{array2_to_grayimage, process_colorspad, unpack_single, apply_transform},
-    utils::sorted_glob, cli::Transform,
+    cli::Transform,
+    transforms::{apply_transform, array2_to_grayimage, process_colorspad, unpack_single},
+    utils::sorted_glob,
 };
 
 #[allow(dead_code)]
@@ -102,13 +102,13 @@ impl<'a> PhotonCube<'a> {
         stop: isize,
         step: usize,
         downscale: f32,
-        transform: &[Transform]
-    ) -> Result<(Vec<GrayImage>, (usize, usize))> {
+        transform: &[Transform],
+    ) -> Result<Vec<GrayImage>> {
         let cube_view = self.view()?;
         let cube_view = cube_view.slice_axis(Axis(0), Slice::new(start, Some(stop), 1));
 
         // Create parallel iterator over all chunks of frames and process them
-        let (virtual_exposures, mut sizes): (Vec<_>, Vec<_>) = cube_view
+        let virtual_exposures: Vec<_> = cube_view
             .axis_chunks_iter(Axis(0), step)
             // Make it parallel
             .into_par_iter()
@@ -137,21 +137,11 @@ impl<'a> PhotonCube<'a> {
                     );
                 }
 
-                let img = apply_transform(img, &transform);
-                let (w, h) = (img.width() as usize, img.height() as usize);
-                (img, (w, h))
+                apply_transform(img, transform)
             })
             // Force iterator to run to completion to get correct ordering
-            .unzip();
+            .collect();
 
-        // Validate all shapes are equal
-        sizes = sizes.into_iter().unique().collect();
-        let [size]: [(usize, usize)] = sizes[..] else {
-            return Err(anyhow!(
-                "Expected all frames to have same shapes but found shapes: {sizes:#?}"
-            ));
-        };
-
-        Ok((virtual_exposures, size))
+        Ok(virtual_exposures)
     }
 }

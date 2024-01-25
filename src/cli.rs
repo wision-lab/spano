@@ -57,11 +57,11 @@ pub struct LKArgs {
     pub downscale: f32,
 
     /// Number of LK iterations to use
-    #[arg(long, default_value_t = 150)]
+    #[arg(long, default_value_t = 250)]
     pub iterations: i32,
 
     /// Stop optimization process when parameter updates have an L1 norm less than this value
-    #[arg(long, default_value_t = 5e-3)]
+    #[arg(long, default_value_t = 1e-3)]
     pub early_stop: f32,
 
     /// Maximum number of levels to use (only used when `--multi`)
@@ -84,7 +84,7 @@ pub struct PanoArgs {
 
     /// Index of binary frame at which to stop the preview at (exclusive)
     #[arg(short, long, default_value = None)]
-    pub stop: Option<isize>,
+    pub end: Option<isize>,
 
     /// Normalized index (i.e [0, 1]) of `with-respect-to` frame, frame with identity warp
     #[arg(long, default_value_t = 0.5, value_parser=validate_normalized)]

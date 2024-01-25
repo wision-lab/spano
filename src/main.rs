@@ -7,9 +7,12 @@ use image::{io::Reader as ImageReader, ImageBuffer, Rgb};
 use image::{GrayImage, Luma};
 use indicatif::{ProgressIterator, ProgressStyle};
 use itertools::Itertools;
-use ndarray::{array, s, Array, Array3, Axis, Slice};
+use ndarray::{array, concatenate, s, Array, Array2, Array3, Axis, NewAxis, Slice};
 use nshare::ToNdarray3;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rayon::iter::{
+    IntoParallelIterator, IntoParallelRefIterator, ParallelBridge, ParallelIterator,
+};
+use rayon::slice::ParallelSlice;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, create_dir_all};
 use std::path::Path;
@@ -33,7 +36,10 @@ use utils::{animate_hierarchical_warp, animate_warp};
 use warps::{warp_array3, warp_image, Mapping, TransformationType};
 
 use crate::blend::distance_transform;
-use crate::transforms::{apply_transform, array2_to_grayimage};
+use crate::lk::pairwise_iclk;
+use crate::transforms::{apply_transform, array2_to_grayimage, ref_image_to_array3};
+use crate::utils::stabilized_video;
+use crate::warps::warp_array3_into;
 
 fn print_type_of<T>(_: &T) {
     println!("{}", std::any::type_name::<T>())
@@ -91,7 +97,7 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
                 global_args.viz_output.as_deref(),
             )?;
         }
-        (mapping, params_history_str, num_steps)
+        (mapping, params_history_str, num_steps - 1)
     } else {
         // Register images
         let (mapping, params_history) = hierarchical_iclk(
@@ -122,7 +128,8 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
     };
 
     println!(
-        "Found following mapping in {num_steps} steps:\n{:6.4}",
+        "Found following mapping in {:} steps:\n{:6.4}",
+        num_steps - 1,
         &mapping.rescale(1.0 / lk_args.downscale).mat
     );
     if let Some(viz_path) = global_args.viz_output {
@@ -159,109 +166,90 @@ fn main() -> Result<()> {
             };
 
             // Load and pre-process chunks of frames from photoncube
-            // We unpack the bitplanes, avergae them in groups of `burst_size`, 
+            // We unpack the bitplanes, avergae them in groups of `burst_size`,
             // Apply color-spad corrections, and optionally downscale.
             // Any transforms (i.e: flipud) can be applied here too.
             let cube = PhotonCube::open(cube_path)?;
-            let (virtual_exposures, size) = cube.load(
+            let virtual_exposures = cube.load(
                 pano_args.start.unwrap_or(0),
-                pano_args.stop.unwrap_or(256 * 250),
+                pano_args.end.unwrap_or(256 * 250),
                 pano_args.burst_size,
                 pano_args.lk_args.downscale,
-                &args.transform
+                &args.transform,
             )?;
 
             // Estimate pairwise registration
-            let mut mappings: Vec<Mapping> = virtual_exposures
-                .iter()
-                .progress()
-                .with_style(ProgressStyle::with_template(
-                    "{msg} ETA:{eta}, [{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>6}/{len:6}",
-                )?)
-                .with_message("Lvl 1:".to_string())
-                .tuple_windows()
-                .map(|(src, dst)| {
-                    iclk_grayscale(
-                        src,                                // im1_gray
-                        dst,                                // im2_gray
-                        gradients(dst),                     // im2_grad,
-                        Mapping::from_params(&[0.0; 2]),    // init_mapping
-                        Some(pano_args.lk_args.iterations), // max_iters
-                        Some(pano_args.lk_args.early_stop), // stop_early
-                        None,                               // message
-                    )
-                    // Drop param_history and rescale transform to full-size
-                    .map(|(mapping, _)| {
-                        mapping
-                        // .rescale(1.0 / lk_args.downscale)
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?
-                // Accumulate all pairwise warps
-                // TODO: maybe impl Copy to minimize the clones here...
-                .iter()
-                .scan(Mapping::identity(), |acc, x| {
-                    *acc = acc.transform(None, Some(x.clone()));
-                    Some(acc.clone())
-                })
-                .collect();
-            // Add in an identity warp to the start to have one warp per frame
-            // TODO: This is slow, maybe chain-in an I warp or use BTree?
-            mappings.insert(0, Mapping::identity());
+            let mappings: Vec<Mapping> = pairwise_iclk(
+                &virtual_exposures,
+                1.0,
+                pano_args.lk_args.iterations,
+                pano_args.lk_args.early_stop,
+                Some(pano_args.wrt),
+                Some("Lvl 1:"),
+            )?;
 
-            // Find middle warp and undo it
-            let wrt_map = Mapping::interpolate_scalar(
-                Array::linspace(0.0, 1.0, virtual_exposures.len()),
+            stabilized_video(
                 &mappings,
-                pano_args.wrt,
-            );
-            let mappings: Vec<Mapping> = mappings
-                .iter()
-                .map(|m| m.transform(Some(wrt_map.inverse()), None))
-                .collect();
+                &virtual_exposures,
+                "tmp/",
+                Some(args.viz_fps),
+                Some(args.viz_step),
+                args.viz_output.as_deref(),
+            )?;
 
-            let (extent, offset) = Mapping::maximum_extent(&mappings[..], size);
+            // Make canvas for panorama
+            let sizes: Vec<_> = virtual_exposures
+                .iter()
+                .map(|f| (f.width() as usize, f.height() as usize))
+                .unique()
+                .collect();
+            let (extent, offset) = Mapping::maximum_extent(&mappings[..], &sizes[..]);
             let [canvas_w, canvas_h] = extent.to_vec()[..] else {
                 unreachable!("Canvas should have width and height")
             };
-            println!("{:}, {:}, {:?}", &canvas_w, &canvas_h, &offset);
+            let (canvas_h, canvas_w) = (canvas_h.ceil() as usize, canvas_w.ceil() as usize);
+            println!(
+                "Made Canvas of size {:}x{:}, with offset {:?}",
+                &canvas_w,
+                &canvas_h,
+                &offset.get_params()
+            );
+            let mut canvas: Array3<f32> = Array3::zeros((canvas_h, canvas_w, 2));
+            let mut valid: Array2<bool> = Array2::from_elem((canvas_h, canvas_w), false);
 
-            for (i, map) in mappings.iter().step_by(args.viz_step).enumerate() {
-                let img = warp_image(
-                    &map.transform(None, Some(offset.clone())),
-                    &virtual_exposures[i],
-                    (canvas_h.ceil() as usize, canvas_w.ceil() as usize),
-                    Some(Luma([128])),
+            let (size, _) = Mapping::maximum_extent(&[Mapping::identity()], &sizes[..]);
+            let weights = distance_transform(
+                size.map(|v| *v as usize)
+                    .into_iter()
+                    .collect_tuple()
+                    .unwrap(),
+            );
+            let weights = weights.slice(s![.., .., NewAxis]);
+            let merge = |dst: &mut [f32], src: &[f32]| {
+                dst[0] += src[0] * src[1];
+                dst[1] += src[1];
+            };
+
+            for (frame, map) in virtual_exposures.iter().zip(mappings).progress() {
+                let frame = ref_image_to_array3(frame).mapv(|v| v as f32);
+                // println!("{:?}, {:?}", frame.shape(), weights.shape());
+                let frame = concatenate(Axis(2), &[frame.view(), weights.view()])?;
+                warp_array3_into(
+                    &map,
+                    &frame.as_standard_layout(),
+                    &mut canvas,
+                    &mut valid,
+                    None,
+                    None,
+                    Some(merge),
                 );
-                // let img = polygon_distance_transform(
-                //     &map.corners(size), (canvas_h.ceil() as usize, canvas_w.ceil() as usize)
-                // ).mapv(|v| (v*255.0).round() as u8);
-                // let img = array2grayimage(img);
-
-                let path = Path::new(&"tmp/".to_string()).join(format!("frame{:06}.png", i));
-                img.save(&path)
-                    .unwrap_or_else(|_| panic!("Could not save frame at {}!", &path.display()));
             }
 
-            make_video(
-                Path::new(&"tmp/".to_string())
-                    .join("frame%06d.png")
-                    .to_str()
-                    .unwrap(),
-                &args.viz_output.unwrap_or("out.mp4".to_string()),
-                25u64,
-                0,
-                None,
-            );
-
-            // let canvas = Array3::<f32>::zeros((canvas_h.ceil() as usize, canvas_w.ceil() as usize, 2));
-            // let weights = distance_transform((canvas_h.ceil() as usize, canvas_w.ceil() as usize));
-
-            // let raw_pano = ImageBuffer::<Luma<f32>, Vec<f32>>::new(canvas_w.ceil() as u32, canvas_h.ceil() as u32);
-            // let weights = ImageBuffer::<Luma<f32>, Vec<f32>>::new(canvas_w.ceil() as u32, canvas_h.ceil() as u32);
-            // let get_pixel = |x, y| interpolate_bilinear(&img2, x, y).unwrap_or(Rgb([128, 0, 0]));
-            // warp(&mut out, mapping.warpfn(), get_pixel);
-            // out.save(global_args.output.unwrap_or("out.png".to_string()))?;
+            array2_to_grayimage(
+                (canvas.slice(s![.., .., 0]).to_owned() / canvas.slice(s![.., .., 1]))
+                    .mapv(|v| v as u8),
+            )
+            .save(&args.output.unwrap_or("out.png".to_string()))?;
             Ok(())
         }
     }

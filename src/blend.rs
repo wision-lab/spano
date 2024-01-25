@@ -11,7 +11,7 @@ pub fn distance_transform(size: (usize, usize)) -> Array2<f32> {
 /// Computes normalized and clipped distance transform (bwdist) for arbitray polygon
 pub fn polygon_distance_transform(corners: &Array2<f32>, size: (usize, usize)) -> Array2<f32> {
     // Points is a Nx2 array of xy pairs
-    let (height, width) = size;
+    let (width, height) = size;
     let points = Array::from_shape_fn((width * height, 2), |(i, j)| {
         if j == 0 {
             (i % width) as f32
@@ -22,7 +22,7 @@ pub fn polygon_distance_transform(corners: &Array2<f32>, size: (usize, usize)) -
     let mut weights = -polygon_sdf(&points, corners);
     let max = weights.fold(-f32::INFINITY, |a, b| a.max(*b));
     weights.mapv_inplace(|v| v / max);
-    weights.into_shape(size).unwrap()
+    weights.into_shape((height, width)).unwrap()
 }
 
 /// Akin to the distance transform used by opencv or bwdist in MATLB but much more general.
