@@ -64,16 +64,22 @@ class Mapping:
 
 
 @task(iterable=["path"])
-def plot(_, path):
-    fig, axes = plt.subplots(nrows=1, ncols=len(path), sharey=True)
+def plot(_, path, normalize=False):
+    fig, axes = plt.subplots(nrows=1, ncols=len(path), sharey=True, squeeze=False)
 
-    for p, ax in zip(path, axes):
+    if len(path) > 1 and normalize:
+        print("WARNING: Normalizing each DOF independently, no direct comparison should be done between plots.")
+
+    for p, ax in zip(path, axes.flatten()):
         ax.set_title(Path(p).name)
 
         with open(p, "r") as f:
             data = json.load(f)
 
         if isinstance(data, list):
+            if normalize:
+                data /= np.abs(data).max(axis=0)
+        
             for i, v in enumerate(np.array(data).T):
                 ax.plot(v, label=i, c=f"C{i}")
         else:
@@ -83,13 +89,15 @@ def plot(_, path):
             }
             data = sorted(data.items(), reverse=True)
             steps = np.cumsum([0] + [len(v) for _, v in data])
+            data = np.concatenate([v for _, v in data])
 
-            for offset, (k, v) in zip(steps, data):
-                for i, vi in enumerate(np.array(v).T):
-                    label = i if k == data[0][0] else ""
-                    ax.plot(np.arange(len(v)) + offset, vi, c=f"C{i}", label=label)
+            if normalize:
+                data /= np.abs(data).max(axis=0)
 
-            for offset in steps[1:]:
+            for i, v in enumerate(data.T):
+                ax.plot(v, c=f"C{i}", label=i)
+
+            for offset in steps[1:-1]:
                 ax.axvline(x=offset, c="k", ls="--", alpha=0.2)
     plt.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
     plt.show()

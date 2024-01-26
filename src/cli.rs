@@ -64,6 +64,10 @@ pub struct LKArgs {
     #[arg(long, default_value_t = 1e-3)]
     pub early_stop: f32,
 
+    /// Controls window size over which parameter updates are averaged, this average is then used in `early_stop` 
+    #[arg(long, default_value_t = 10)]
+    pub patience: usize,
+
     /// Maximum number of levels to use (only used when `--multi`)
     #[arg(long, default_value_t = 8)]
     pub max_lvls: u32,

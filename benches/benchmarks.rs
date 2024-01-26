@@ -12,7 +12,7 @@ use spano::{
 };
 
 pub fn benchmark_warp_array3(c: &mut Criterion) {
-    let img = ImageReader::open("madison1.png")
+    let img = ImageReader::open("assets/madison1.png")
         .unwrap()
         .decode()
         .unwrap()

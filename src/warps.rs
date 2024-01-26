@@ -160,10 +160,12 @@ impl Mapping {
     }
 
     pub fn rescale(&self, scale: f32) -> Self {
-        self.transform(
+        let mut map = self.transform(
             Some(Mapping::scale(1.0 / scale, 1.0 / scale)),
             Some(Mapping::scale(scale, scale)),
-        )
+        );
+        // map.kind = self.kind;
+        map
     }
 
     pub fn corners(&self, size: (usize, usize)) -> Array2<f32> {
@@ -372,8 +374,6 @@ pub fn warp_array3_into<S, T>(
     (
         out.as_slice_mut().unwrap().par_chunks_mut(out_c),
         valid.as_slice_mut().unwrap().par_iter_mut(),
-        // warpd.column(0).as_slice().unwrap(),
-        // warpd.column(1).as_slice().unwrap(),
         warpd.column(0).axis_iter(Axis(0)),
         warpd.column(1).axis_iter(Axis(0)),
     )

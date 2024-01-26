@@ -327,6 +327,7 @@ pub fn hierarchical_iclk<P>(
     max_levels: u32,
     stop_early: Option<f32>,
     patience: Option<usize>,
+    message: bool,
 ) -> Result<(Mapping, HashMap<u32, Vec<Vec<f32>>>)>
 where
     P: Pixel + Send + Sync,
@@ -355,6 +356,8 @@ where
 
         // Perform optimization at lvl
         let params_history;
+        let msg = format!("Using scale 1/{:}", &current_scale);
+        let msg = if message {Some(msg)} else {None};
         (mapping, params_history) = iclk_grayscale(
             im1,
             im2,
@@ -363,7 +366,7 @@ where
             max_iters,
             stop_early,
             patience,
-            Some(&format!("Using scale 1/{:}", &current_scale)),
+            msg.as_deref(),
         )?;
 
         // Re-normalize mapping to scale of next level of pyramid
@@ -382,8 +385,11 @@ where
 /// Estimate pairwise registration using single level iclk
 pub fn pairwise_iclk(
     frames: &Vec<GrayImage>,
+    init_mappings: &[Mapping],
     scale: f32,
     iterations: i32,
+    min_dimensions: (u32, u32),
+    max_levels: u32,
     early_stop: f32,
     patience: usize,
     wrt: Option<f32>,
@@ -402,18 +408,29 @@ pub fn pairwise_iclk(
 
     // Iterate over sliding window of pairwise frames (in parallel!)
     let mappings: Vec<Mapping> = frames
-        .par_windows(2)
-        .map(|window| {
+        .par_windows(2).zip(init_mappings)
+        .map(|(window, init_mapping)| {
             pbar.inc(1);
-            iclk_grayscale(
-                &window[0],                      // im1_gray
-                &window[1],                      // im2_gray
-                gradients(&window[1]),           // im2_grad,
-                Mapping::from_params(&[0.0; 2]), // init_mapping
-                Some(iterations),                // max_iters
-                Some(early_stop),                // stop_early
-                Some(patience),                  // patience
-                None,                            // message
+            // iclk_grayscale(
+            //     &window[0],             // im1_gray
+            //     &window[1],             // im2_gray
+            //     gradients(&window[1]),  // im2_grad,
+            //     init_mapping.clone(),   // init_mapping
+            //     Some(iterations),       // max_iters
+            //     Some(early_stop),       // stop_early
+            //     Some(patience),         // patience
+            //     None,                   // message
+            // )
+            hierarchical_iclk(
+                &window[0],             // im1_gray
+                &window[1],             // im2_gray
+                init_mapping.clone(),   // init_mapping
+                Some(iterations),       // max_iters
+                min_dimensions,         // min_dimensions
+                max_levels,             // max_levels
+                Some(early_stop),       // stop_early
+                Some(patience),         // patience
+                false,                  // message
             )
             // Drop param_history and rescale transform to full-size
             .map(|(mapping, _)| mapping.rescale(scale))

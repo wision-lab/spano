@@ -36,7 +36,7 @@ use utils::{animate_hierarchical_warp, animate_warp};
 use warps::{warp_array3, warp_image, Mapping, TransformationType};
 
 use crate::blend::distance_transform;
-use crate::lk::pairwise_iclk;
+use crate::lk::{img_pyramid, pairwise_iclk};
 use crate::transforms::{apply_transform, array2_to_grayimage, ref_image_to_array3};
 use crate::utils::stabilized_video;
 use crate::warps::warp_array3_into;
@@ -65,13 +65,6 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
     let img1 = resize(&img1, w, h, FilterType::CatmullRom);
     let img2 = resize(&img2, w, h, FilterType::CatmullRom);
 
-    // Get img path or tempdir, ensure it exists.
-    let tmp_dir = tempdir()?;
-    let img_dir = global_args
-        .img_dir
-        .unwrap_or(tmp_dir.path().to_str().unwrap().to_owned());
-    create_dir_all(&img_dir).ok();
-
     // Perform Matching
     let (mapping, params_history_str, num_steps) = if !lk_args.multi {
         // Register images
@@ -81,7 +74,7 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
             Mapping::from_params(&[0.0; 8]),
             Some(lk_args.iterations),
             Some(lk_args.early_stop),
-            Some(10)
+            Some(lk_args.patience)
         )?;
         let num_steps = params_history.len();
 
@@ -91,7 +84,7 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
             animate_warp(
                 img2_path,
                 params_history,
-                &img_dir,
+                &global_args.img_dir.unwrap(),
                 lk_args.downscale,
                 Some(global_args.viz_fps),  // FPS
                 Some(global_args.viz_step), // Step
@@ -109,7 +102,8 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
             (25, 25),
             lk_args.max_lvls,
             Some(lk_args.early_stop),
-            Some(10)
+            Some(lk_args.patience),
+            true
         )?;
         let num_steps = params_history.values().map(|v| v.len()).sum();
 
@@ -120,7 +114,7 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
                 img2_path,
                 params_history,
                 lk_args.downscale,
-                &img_dir,
+                &global_args.img_dir.unwrap(),
                 Some(global_args.viz_fps),  // FPS
                 Some(global_args.viz_step), // Step
                 global_args.viz_output.as_deref(),
@@ -155,7 +149,15 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
 
 fn main() -> Result<()> {
     // Parse arguments defined in struct
-    let args = Cli::parse();
+    let mut args = Cli::parse();
+
+    // Get img path or tempdir, ensure it exists.
+    let tmp_dir = tempdir()?;
+    let img_dir = args
+        .img_dir.clone()
+        .unwrap_or(tmp_dir.path().to_str().unwrap().to_owned());
+    create_dir_all(&img_dir).ok();
+    args.img_dir = Some(img_dir);
 
     match &args.command {
         None => Err(anyhow!("Only `LK` subcommand is currently implemented.")),
@@ -181,12 +183,16 @@ fn main() -> Result<()> {
             )?;
 
             // Estimate pairwise registration
+            let init_mappings = vec![Mapping::identity(); virtual_exposures.len()-1];
             let mappings: Vec<Mapping> = pairwise_iclk(
                 &virtual_exposures,
+                &init_mappings[..],
                 1.0,
                 pano_args.lk_args.iterations,
+                (25, 25),
+                pano_args.lk_args.max_lvls,
                 pano_args.lk_args.early_stop,
-                10,
+                pano_args.lk_args.patience,
                 Some(pano_args.wrt),
                 Some("Lvl 1:"),
             )?;
@@ -194,7 +200,7 @@ fn main() -> Result<()> {
             stabilized_video(
                 &mappings,
                 &virtual_exposures,
-                "tmp/",
+                &args.img_dir.unwrap(),
                 Some(args.viz_fps),
                 Some(args.viz_step),
                 args.viz_output.as_deref(),
@@ -235,7 +241,6 @@ fn main() -> Result<()> {
 
             for (frame, map) in virtual_exposures.iter().zip(mappings).progress() {
                 let frame = ref_image_to_array3(frame).mapv(|v| v as f32);
-                // println!("{:?}, {:?}", frame.shape(), weights.shape());
                 let frame = concatenate(Axis(2), &[frame.view(), weights.view()])?;
                 warp_array3_into(
                     &map,
