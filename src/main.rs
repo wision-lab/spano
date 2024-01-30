@@ -1,45 +1,50 @@
 #![allow(dead_code)] // Todo: Remove
 #![allow(unused_imports)]
+#![warn(unused_extern_crates)]
+
+use std::{
+    fs::{self, create_dir_all},
+    path::Path,
+};
 
 use anyhow::{anyhow, Result};
-use image::imageops::{grayscale, resize, FilterType};
-use image::{io::Reader as ImageReader, ImageBuffer, Rgb};
-use image::{GrayImage, Luma};
+use image::{
+    imageops::{grayscale, resize, FilterType},
+    io::Reader as ImageReader,
+    GrayImage, ImageBuffer, Luma, Rgb,
+};
 use indicatif::{ProgressIterator, ProgressStyle};
 use itertools::Itertools;
 use ndarray::{array, concatenate, s, Array, Array2, Array3, Axis, NewAxis, Slice};
 use nshare::ToNdarray3;
-use rayon::iter::{
-    IntoParallelIterator, IntoParallelRefIterator, ParallelBridge, ParallelIterator,
+use photoncube2video::{
+    ffmpeg::make_video,
+    cube::{PhotonCube, PhotonCubeView, VirtualExposure},
+    transforms::{
+        apply_transforms, array2_to_grayimage, array3_to_image, process_colorspad,
+        ref_image_to_array3, unpack_single,
+    },
 };
-use rayon::slice::ParallelSlice;
+use rayon::{
+    iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelBridge, ParallelIterator},
+    slice::ParallelSlice,
+};
 use serde::{Deserialize, Serialize};
-use std::fs::{self, create_dir_all};
-use std::path::Path;
 use tempfile::tempdir;
 
 mod blend;
 mod cli;
-mod ffmpeg;
-mod io;
 mod lk;
-mod transforms;
 mod utils;
 mod warps;
 
-use cli::{Cli, Commands, LKArgs, Parser};
-use ffmpeg::make_video;
-use io::PhotonCube;
-use lk::{gradients, hierarchical_iclk, iclk, iclk_grayscale};
-use transforms::{array3_to_image, process_colorspad, unpack_single};
-use utils::{animate_hierarchical_warp, animate_warp};
-use warps::{warp_array3, warp_image, Mapping, TransformationType};
-
-use crate::blend::distance_transform;
-use crate::lk::{img_pyramid, pairwise_iclk};
-use crate::transforms::{apply_transform, array2_to_grayimage, ref_image_to_array3};
-use crate::utils::stabilized_video;
-use crate::warps::warp_array3_into;
+use crate::{
+    blend::distance_transform,
+    cli::{Cli, Commands, LKArgs, Parser},
+    lk::{gradients, hierarchical_iclk, iclk, iclk_grayscale, img_pyramid, pairwise_iclk},
+    utils::{animate_hierarchical_warp, animate_warp, stabilized_video},
+    warps::{warp_array3, warp_array3_into, warp_image, Mapping, TransformationType},
+};
 
 fn print_type_of<T>(_: &T) {
     println!("{}", std::any::type_name::<T>())
@@ -74,7 +79,7 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
             Mapping::from_params(&[0.0; 8]),
             Some(lk_args.iterations),
             Some(lk_args.early_stop),
-            Some(lk_args.patience)
+            Some(lk_args.patience),
         )?;
         let num_steps = params_history.len();
 
@@ -103,7 +108,7 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
             lk_args.max_lvls,
             Some(lk_args.early_stop),
             Some(lk_args.patience),
-            true
+            true,
         )?;
         let num_steps = params_history.values().map(|v| v.len()).sum();
 
@@ -154,7 +159,8 @@ fn main() -> Result<()> {
     // Get img path or tempdir, ensure it exists.
     let tmp_dir = tempdir()?;
     let img_dir = args
-        .img_dir.clone()
+        .img_dir
+        .clone()
         .unwrap_or(tmp_dir.path().to_str().unwrap().to_owned());
     create_dir_all(&img_dir).ok();
     args.img_dir = Some(img_dir);
@@ -173,17 +179,37 @@ fn main() -> Result<()> {
             // We unpack the bitplanes, avergae them in groups of `burst_size`,
             // Apply color-spad corrections, and optionally downscale.
             // Any transforms (i.e: flipud) can be applied here too.
+
             let cube = PhotonCube::open(cube_path)?;
-            let virtual_exposures = cube.load(
-                pano_args.start.unwrap_or(0),
-                pano_args.end.unwrap_or(256 * 250),
-                pano_args.burst_size,
-                pano_args.lk_args.downscale,
-                &args.transform,
-            )?;
+            let view = cube.view()?;
+            let slice = view.slice_axis(
+                Axis(0),
+                Slice::new(
+                    pano_args.start.unwrap_or(0),
+                    pano_args.end.or(Some(256 * 250)),
+                    1,
+                ),
+            );
+            let virtual_exposures: Vec<_> = slice
+                .par_virtual_exposures(pano_args.burst_size, true)
+                .map(|frame| {
+                    let frame = frame.mapv(|x| (x * 255.0) as u8);
+                    let mut img = array2_to_grayimage(process_colorspad(frame));
+                    if pano_args.lk_args.downscale != 1.0 {
+                        img = resize(
+                            &img,
+                            (img.width() as f32 / pano_args.lk_args.downscale).round() as u32,
+                            (img.height() as f32 / pano_args.lk_args.downscale).round() as u32,
+                            FilterType::CatmullRom,
+                        );
+                    }
+
+                    apply_transforms(img, &args.transform[..])
+                })
+                .collect();
 
             // Estimate pairwise registration
-            let init_mappings = vec![Mapping::identity(); virtual_exposures.len()-1];
+            let init_mappings = vec![Mapping::identity(); virtual_exposures.len() - 1];
             let mappings: Vec<Mapping> = pairwise_iclk(
                 &virtual_exposures,
                 &init_mappings[..],

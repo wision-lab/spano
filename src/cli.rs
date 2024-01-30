@@ -1,5 +1,6 @@
 pub use clap::Parser;
-use clap::{Args, Subcommand, ValueEnum};
+use clap::{Args, Subcommand};
+use photoncube2video::transforms::Transform;
 
 fn validate_normalized(p: &str) -> Result<f32, String> {
     let value = p.parse::<f32>().map_err(|_| "Invalid value")?;
@@ -64,7 +65,7 @@ pub struct LKArgs {
     #[arg(long, default_value_t = 1e-3)]
     pub early_stop: f32,
 
-    /// Controls window size over which parameter updates are averaged, this average is then used in `early_stop` 
+    /// Controls window size over which parameter updates are averaged, this average is then used in `early_stop`
     #[arg(long, default_value_t = 10)]
     pub patience: usize,
 
@@ -106,14 +107,4 @@ pub enum Commands {
 
     /// Estimate pairwise homographies and interpolate to all frames.
     Pano(PanoArgs),
-}
-
-#[derive(ValueEnum, Clone, Copy, Debug)]
-pub enum Transform {
-    Identity,
-    Rot90,
-    Rot180,
-    Rot270,
-    FlipUD,
-    FlipLR,
 }

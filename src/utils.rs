@@ -1,35 +1,25 @@
-use std::collections::HashMap;
-use std::fs::{create_dir_all, remove_dir_all};
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    fs::{create_dir_all, remove_dir_all},
+    path::Path,
+};
 
 use anyhow::Result;
 use conv::ValueInto;
-use glob::glob;
-use image::imageops::{resize, FilterType};
-use image::{io::Reader as ImageReader, Rgb};
-use image::{EncodableLayout, Pixel, PixelWithColorType};
+use image::{
+    imageops::{resize, FilterType},
+    io::Reader as ImageReader,
+    EncodableLayout, Pixel, PixelWithColorType, Rgb,
+};
 use imageproc::definitions::{Clamp, Image};
 use itertools::Itertools;
-use natord::compare;
+use photoncube2video::{
+    ffmpeg::{ensure_ffmpeg, make_video},
+    transforms::annotate,
+};
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
-use crate::ffmpeg::{ensure_ffmpeg, make_video};
-use crate::transforms::annotate;
 use crate::warps::{warp_image, Mapping};
-
-pub fn sorted_glob(path: &Path, pattern: &str) -> Result<Vec<String>> {
-    let paths: Vec<PathBuf> =
-        glob(path.join(pattern).to_str().unwrap())?.collect::<Result<Vec<PathBuf>, _>>()?;
-    let paths: Vec<&str> = paths
-        .iter()
-        .map(|v| v.to_str())
-        .collect::<Option<Vec<&str>>>()
-        .unwrap();
-    let mut paths: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
-    paths.sort_by(|a, b| compare(a, b));
-
-    Ok(paths)
-}
 
 pub fn animate_warp(
     img_path: &str,
@@ -72,6 +62,7 @@ pub fn animate_warp(
         out_path.unwrap_or("out.mp4"),
         fps.unwrap_or(25u64),
         0,
+        None,
         None,
     );
     Ok(())
@@ -123,7 +114,11 @@ pub fn animate_hierarchical_warp(
                     (h as usize, w as usize),
                     Some(Rgb([128, 128, 128])),
                 );
-                annotate(&mut out, &format!("Scale: 1/{:.2}", scale));
+                annotate(
+                    &mut out,
+                    &format!("Scale: 1/{:.2}", scale),
+                    Rgb([252, 186, 3]),
+                );
 
                 let path = Path::new(&img_dir).join(format!("frame{:06}.png", i + offset));
                 out.save(&path)
@@ -138,6 +133,7 @@ pub fn animate_hierarchical_warp(
         out_path.unwrap_or("out.mp4"),
         fps.unwrap_or(25u64),
         0,
+        None,
         None,
     );
     Ok(())
@@ -197,6 +193,7 @@ where
         out_path.unwrap_or("out.mp4"),
         fps.unwrap_or(25u64),
         0,
+        None,
         None,
     );
     Ok(())

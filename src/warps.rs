@@ -5,15 +5,17 @@ use heapless::Vec as hVec;
 use image::Pixel;
 use imageproc::definitions::{Clamp, Image};
 use itertools::multizip;
-use ndarray::{array, concatenate, s, Array1, Array2, Array3, ArrayBase, Axis, Ix3, RawData};
-use ndarray::{stack, Array};
+use ndarray::{
+    array, concatenate, s, stack, Array, Array1, Array2, Array3, ArrayBase, Axis, Ix3, RawData,
+};
 use ndarray_interp::interp1d::{CubicSpline, Interp1DBuilder};
 use ndarray_linalg::solve::Inverse;
 use num_traits::AsPrimitive;
-use rayon::iter::{IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
-use rayon::slice::ParallelSliceMut;
-
-use crate::transforms::{array3_to_image, ref_image_to_array3};
+use photoncube2video::transforms::{array3_to_image, ref_image_to_array3};
+use rayon::{
+    iter::{IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator},
+    slice::ParallelSliceMut,
+};
 
 #[derive(Copy, Clone, Debug)]
 pub enum TransformationType {
@@ -160,7 +162,7 @@ impl Mapping {
     }
 
     pub fn rescale(&self, scale: f32) -> Self {
-        let mut map = self.transform(
+        let map = self.transform(
             Some(Mapping::scale(1.0 / scale, 1.0 / scale)),
             Some(Mapping::scale(scale, scale)),
         );

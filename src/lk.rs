@@ -2,15 +2,15 @@ use std::collections::{HashMap, VecDeque};
 
 use anyhow::{anyhow, Result};
 use conv::{ValueFrom, ValueInto};
-use image::imageops::colorops::grayscale;
-use image::imageops::{resize, FilterType};
-use image::{GrayImage, Luma, Pixel, Primitive};
+use image::{
+    imageops::{colorops::grayscale, resize, FilterType},
+    GrayImage, Luma, Pixel, Primitive,
+};
 use imageproc::{
     definitions::{Clamp, Image},
     filter::filter3x3,
     gradients::{HORIZONTAL_SOBEL, VERTICAL_SOBEL},
 };
-
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::{chain, izip};
 use ndarray::{
@@ -18,9 +18,9 @@ use ndarray::{
 };
 use ndarray_linalg::solve::Inverse;
 use nshare::ToNdarray2;
+use photoncube2video::transforms::image_to_array3;
 use rayon::prelude::*;
 
-use crate::transforms::image_to_array3;
 use crate::warps::{warp_array3_into, Mapping, TransformationType};
 
 /// Compute image gradients using Sobel operator
@@ -308,8 +308,12 @@ where
         dps.push_back(dp.clone());
 
         // Early exit if average dp is small
-        let avg_dp = &dps.iter().fold(Array2::<f32>::zeros((params.len(), 1)), |acc, e| acc + e) / dps.len() as f32;
-        if Array2::<f32>::zeros((params.len(), 1)).abs_diff_eq(&avg_dp, stop_early.unwrap_or(1e-3)) {
+        let avg_dp = &dps
+            .iter()
+            .fold(Array2::<f32>::zeros((params.len(), 1)), |acc, e| acc + e)
+            / dps.len() as f32;
+        if Array2::<f32>::zeros((params.len(), 1)).abs_diff_eq(&avg_dp, stop_early.unwrap_or(1e-3))
+        {
             break;
         }
     }
@@ -357,7 +361,7 @@ where
         // Perform optimization at lvl
         let params_history;
         let msg = format!("Using scale 1/{:}", &current_scale);
-        let msg = if message {Some(msg)} else {None};
+        let msg = if message { Some(msg) } else { None };
         (mapping, params_history) = iclk_grayscale(
             im1,
             im2,
@@ -408,7 +412,8 @@ pub fn pairwise_iclk(
 
     // Iterate over sliding window of pairwise frames (in parallel!)
     let mappings: Vec<Mapping> = frames
-        .par_windows(2).zip(init_mappings)
+        .par_windows(2)
+        .zip(init_mappings)
         .map(|(window, init_mapping)| {
             pbar.inc(1);
             // iclk_grayscale(
@@ -422,15 +427,15 @@ pub fn pairwise_iclk(
             //     None,                   // message
             // )
             hierarchical_iclk(
-                &window[0],             // im1_gray
-                &window[1],             // im2_gray
-                init_mapping.clone(),   // init_mapping
-                Some(iterations),       // max_iters
-                min_dimensions,         // min_dimensions
-                max_levels,             // max_levels
-                Some(early_stop),       // stop_early
-                Some(patience),         // patience
-                false,                  // message
+                &window[0],           // im1_gray
+                &window[1],           // im2_gray
+                init_mapping.clone(), // init_mapping
+                Some(iterations),     // max_iters
+                min_dimensions,       // min_dimensions
+                max_levels,           // max_levels
+                Some(early_stop),     // stop_early
+                Some(patience),       // patience
+                false,                // message
             )
             // Drop param_history and rescale transform to full-size
             .map(|(mapping, _)| mapping.rescale(scale))

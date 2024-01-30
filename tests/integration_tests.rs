@@ -1,11 +1,8 @@
 use approx::assert_relative_eq;
 use image::{io::Reader as ImageReader, Rgb};
 use ndarray::array;
-
-use spano::{
-    transforms::image_to_array3,
-    warps::{warp_image, Mapping, TransformationType},
-};
+use photoncube2video::transforms::image_to_array3;
+use spano::warps::{warp_image, Mapping, TransformationType};
 
 #[test]
 fn test_warp_img() {
