@@ -21,7 +21,7 @@ use nshare::ToNdarray2;
 use photoncube2video::transforms::image_to_array3;
 use rayon::prelude::*;
 
-use crate::warps::{warp_array3_into, Mapping, TransformationType};
+use crate::warps::{Mapping, TransformationType};
 
 /// Compute image gradients using Sobel operator
 /// Returned (dx, dy) pair as HxW arrays.
@@ -69,6 +69,7 @@ where
 }
 
 /// Main iclk routine, only works for grayscale images
+#[allow(clippy::too_many_arguments)]
 pub fn iclk_grayscale<T>(
     im1_gray: &Image<Luma<T>>,
     im2_gray: &Image<Luma<T>>,
@@ -85,6 +86,7 @@ where
 {
     // Initialize values
     let mut params = init_mapping.inverse().get_params();
+    let num_params = params.len();
     let h = im2_gray.height().min(im1_gray.height());
     let w = im2_gray.width().min(im1_gray.width());
     let points = Array::from_shape_fn(((w * h) as usize, 2), |(i, j)| {
@@ -260,9 +262,8 @@ where
         pbar.set_position(i as u64);
 
         // Create mapping from params and use it to sample points from img1
-        let mapping = Mapping::from_params(&params);
-        warp_array3_into::<_, f32>(
-            &mapping,
+        let mapping = Mapping::from_params(params);
+        mapping.warp_array3_into::<_, f32>(
             &img1_array,
             &mut warped_im1gray_pixels,
             &mut valid,
@@ -292,9 +293,9 @@ where
                 // Calculate parameter update according to formula
                 .map(|(sd, p1, p2, _)| sd.to_owned() * (p1.to_owned() - p2.to_owned()).sum())
                 // Sum them together, here we use reduce with a base value of zero
-                .reduce(|| Array2::<f32>::zeros((params.len(), 1)), |a, b| a + b),
+                .reduce(|| Array2::<f32>::zeros((num_params, 1)), |a, b| a + b),
         );
-        let mapping_dp = Mapping::from_params(&dp.clone().into_raw_vec());
+        let mapping_dp = Mapping::from_params(dp.clone().into_raw_vec());
 
         // Update the parameters
         params = Mapping::from_matrix(mapping.mat.dot(&mapping_dp.mat.inv()?), init_mapping.kind)
@@ -310,18 +311,18 @@ where
         // Early exit if average dp is small
         let avg_dp = &dps
             .iter()
-            .fold(Array2::<f32>::zeros((params.len(), 1)), |acc, e| acc + e)
+            .fold(Array2::<f32>::zeros((num_params, 1)), |acc, e| acc + e)
             / dps.len() as f32;
-        if Array2::<f32>::zeros((params.len(), 1)).abs_diff_eq(&avg_dp, stop_early.unwrap_or(1e-3))
-        {
+        if Array2::<f32>::zeros((num_params, 1)).abs_diff_eq(&avg_dp, stop_early.unwrap_or(1e-3)) {
             break;
         }
     }
 
-    Ok((Mapping::from_params(&params).inverse(), params_history))
+    Ok((Mapping::from_params(params).inverse(), params_history))
 }
 
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 pub fn hierarchical_iclk<P>(
     im1: &Image<P>,
     im2: &Image<P>,
@@ -387,6 +388,7 @@ where
 }
 
 /// Estimate pairwise registration using single level iclk
+#[allow(clippy::too_many_arguments)]
 pub fn pairwise_iclk(
     frames: &Vec<GrayImage>,
     init_mappings: &[Mapping],
@@ -461,8 +463,8 @@ pub fn pairwise_iclk(
 
     // Find wrt warp and undo it
     let wrt_map = Mapping::interpolate_scalar(
-        Array::linspace(0.0, 1.0, frames.len()),
-        &mappings,
+        Array::linspace(0.0, 1.0, frames.len()).to_vec(),
+        mappings.to_owned(),
         wrt.unwrap(),
     );
     let mappings: Vec<Mapping> = mappings

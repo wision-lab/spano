@@ -5,7 +5,7 @@ use ndarray::{array, Array3};
 use pprof::criterion::{Output, PProfProfiler};
 use spano::{
     blend::distance_transform,
-    warps::{warp_array3, Mapping, TransformationType},
+    warps::{Mapping, TransformationType},
 };
 
 pub fn benchmark_warp_array3(c: &mut Criterion) {
@@ -31,8 +31,7 @@ pub fn benchmark_warp_array3(c: &mut Criterion) {
 
     c.bench_function("warp_array3", |b| {
         b.iter(|| {
-            let _out = warp_array3(
-                &map,
+            let _out = map.warp_array3(
                 &data,
                 (h as usize, w as usize),
                 Some(array![128.0, 0.0, 0.0]),

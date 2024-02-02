@@ -1,54 +1,33 @@
-#![allow(dead_code)] // Todo: Remove
-#![allow(unused_imports)]
-#![warn(unused_extern_crates)]
-
 use std::{
-    fs::{self, create_dir_all},
-    path::Path,
+    env,
+    fs::{create_dir_all, write},
 };
 
 use anyhow::{anyhow, Result};
 use image::{
-    imageops::{grayscale, resize, FilterType},
+    imageops::{resize, FilterType},
     io::Reader as ImageReader,
-    GrayImage, ImageBuffer, Luma, Rgb,
+    Rgb,
 };
-use indicatif::{ProgressIterator, ProgressStyle};
+use indicatif::ProgressIterator;
 use itertools::Itertools;
-use ndarray::{array, concatenate, s, Array, Array2, Array3, Axis, NewAxis, Slice};
-use nshare::ToNdarray3;
+use ndarray::{concatenate, s, Array2, Array3, Axis, NewAxis, Slice};
 use photoncube2video::{
-    ffmpeg::make_video,
-    cube::{PhotonCube, PhotonCubeView, VirtualExposure},
-    transforms::{
-        apply_transforms, array2_to_grayimage, array3_to_image, process_colorspad,
-        ref_image_to_array3, unpack_single,
-    },
+    cube::{PhotonCube, VirtualExposure},
+    signals::DeferedSignal,
+    transforms::{apply_transforms, array2_to_grayimage, process_colorspad, ref_image_to_array3},
 };
-use rayon::{
-    iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelBridge, ParallelIterator},
-    slice::ParallelSlice,
-};
-use serde::{Deserialize, Serialize};
+use pyo3::prelude::*;
+use rayon::iter::ParallelIterator;
 use tempfile::tempdir;
-
-mod blend;
-mod cli;
-mod lk;
-mod utils;
-mod warps;
 
 use crate::{
     blend::distance_transform,
     cli::{Cli, Commands, LKArgs, Parser},
-    lk::{gradients, hierarchical_iclk, iclk, iclk_grayscale, img_pyramid, pairwise_iclk},
+    lk::{hierarchical_iclk, iclk, pairwise_iclk},
     utils::{animate_hierarchical_warp, animate_warp, stabilized_video},
-    warps::{warp_array3, warp_array3_into, warp_image, Mapping, TransformationType},
+    warps::Mapping,
 };
-
-fn print_type_of<T>(_: &T) {
-    println!("{}", std::any::type_name::<T>())
-}
 
 fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
     let [img1_path, img2_path, ..] = &global_args.input[..] else {
@@ -76,7 +55,7 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
         let (mapping, params_history) = iclk(
             &img1,
             &img2,
-            Mapping::from_params(&[0.0; 8]),
+            Mapping::from_params(vec![0.0; 8]),
             Some(lk_args.iterations),
             Some(lk_args.early_stop),
             Some(lk_args.patience),
@@ -102,7 +81,7 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
         let (mapping, params_history) = hierarchical_iclk(
             &img1,
             &img2,
-            Mapping::from_params(&[0.0; 8]),
+            Mapping::from_params(vec![0.0; 8]),
             Some(lk_args.iterations),
             (25, 25),
             lk_args.max_lvls,
@@ -137,24 +116,28 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
         println!("Saving animation to {viz_path}...");
     }
     if let Some(out_path) = global_args.output {
-        let out = warp_image(
-            &mapping,
-            &img2,
-            (h as usize, w as usize),
-            Some(Rgb([128, 0, 0])),
-        );
+        let out = mapping.warp_image(&img2, (h as usize, w as usize), Some(Rgb([128, 0, 0])));
         out.save(&out_path)?;
         println!("Saving warped image to {out_path}...");
     }
     if let Some(params_path) = lk_args.params_path {
-        fs::write(params_path, params_history_str).expect("Unable to write params file.");
+        write(params_path, params_history_str).expect("Unable to write params file.");
     }
     Ok(())
 }
 
-fn main() -> Result<()> {
+#[pyfunction]
+pub fn cli_entrypoint(py: Python) -> Result<()> {
+    // Start by telling python to not intercept CTRL+C signal,
+    // Otherwise we won't get it here and will not be interruptable.
+    // See: https://github.com/PyO3/pyo3/pull/3560
+    let _defer = DeferedSignal::new(py, "SIGINT")?;
+
     // Parse arguments defined in struct
-    let mut args = Cli::parse();
+    // Since we're actually calling this via python, the first argument
+    // is going to be the path to the python interpreter, so we skip it.
+    // See: https://www.maturin.rs/bindings#both-binary-and-library
+    let mut args = Cli::parse_from(env::args_os().skip(1));
 
     // Get img path or tempdir, ensure it exists.
     let tmp_dir = tempdir()?;
@@ -268,8 +251,7 @@ fn main() -> Result<()> {
             for (frame, map) in virtual_exposures.iter().zip(mappings).progress() {
                 let frame = ref_image_to_array3(frame).mapv(|v| v as f32);
                 let frame = concatenate(Axis(2), &[frame.view(), weights.view()])?;
-                warp_array3_into(
-                    &map,
+                map.warp_array3_into(
                     &frame.as_standard_layout(),
                     &mut canvas,
                     &mut valid,

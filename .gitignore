@@ -5,3 +5,4 @@
 .vscode/
 *.svg
 *.json
+__pycache__/

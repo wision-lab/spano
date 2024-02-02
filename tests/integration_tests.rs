@@ -2,7 +2,7 @@ use approx::assert_relative_eq;
 use image::{io::Reader as ImageReader, Rgb};
 use ndarray::array;
 use photoncube2video::transforms::image_to_array3;
-use spano::warps::{warp_image, Mapping, TransformationType};
+use spano::warps::{Mapping, TransformationType};
 
 #[test]
 fn test_warp_img() {
@@ -28,12 +28,7 @@ fn test_warp_img() {
         .into_rgb8();
     let (w, h) = img_src.dimensions();
 
-    let img_warped = warp_image(
-        &map,
-        &img_src,
-        (h as usize, w as usize),
-        Some(Rgb([128, 0, 0])),
-    );
+    let img_warped = map.warp_image(&img_src, (h as usize, w as usize), Some(Rgb([128, 0, 0])));
     let arr_dst = image_to_array3(img_dst).mapv(|v| v as f32);
     let arr_warped = image_to_array3(img_warped).mapv(|v| v as f32);
     assert_relative_eq!(arr_dst, arr_warped);

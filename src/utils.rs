@@ -9,7 +9,7 @@ use conv::ValueInto;
 use image::{
     imageops::{resize, FilterType},
     io::Reader as ImageReader,
-    EncodableLayout, Pixel, PixelWithColorType, Rgb,
+    EncodableLayout, Pixel, PixelWithColorType, Primitive, Rgb,
 };
 use imageproc::definitions::{Clamp, Image};
 use itertools::Itertools;
@@ -17,9 +17,11 @@ use photoncube2video::{
     ffmpeg::{ensure_ffmpeg, make_video},
     transforms::annotate,
 };
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use rayon::iter::{
+    IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
+};
 
-use crate::warps::{warp_image, Mapping};
+use crate::warps::Mapping;
 
 pub fn animate_warp(
     img_path: &str,
@@ -40,16 +42,14 @@ pub fn animate_warp(
     create_dir_all(img_dir)?;
 
     params_history
-        .par_iter()
+        .into_par_iter()
         .step_by(step.unwrap_or(100))
         .enumerate()
         .for_each(|(i, params)| {
-            let out = warp_image(
-                &Mapping::from_params(params).inverse().rescale(1.0 / scale),
-                &img,
-                (h as usize, w as usize),
-                Some(Rgb([128, 128, 128])),
-            );
+            let out = Mapping::from_params(params)
+                .inverse()
+                .rescale(1.0 / scale)
+                .warp_image(&img, (h as usize, w as usize), Some(Rgb([128, 128, 128])));
 
             let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
             out.save(&path)
@@ -87,9 +87,9 @@ pub fn animate_hierarchical_warp(
     }
     create_dir_all(img_dir)?;
 
-    for (scale, params_history) in all_params_history.iter().sorted_by_key(|x| x.0).rev() {
+    for (scale, params_history) in all_params_history.into_iter().sorted_by_key(|x| x.0).rev() {
         // This is not super efficient, but it's debug/viz code...
-        let scale = *scale as f32 * global_scale;
+        let scale = scale as f32 * global_scale;
         let resized = resize(
             &resize(
                 &img,
@@ -104,16 +104,18 @@ pub fn animate_hierarchical_warp(
 
         // for params in params_history.iter().step_by(step.unwrap_or(10)) {
         offset += params_history
-            .par_iter()
+            .into_par_iter()
             .step_by(step.unwrap_or(100))
             .enumerate()
             .map(|(i, params)| {
-                let mut out = warp_image(
-                    &Mapping::from_params(params).inverse().rescale(1.0 / scale),
-                    &resized,
-                    (h as usize, w as usize),
-                    Some(Rgb([128, 128, 128])),
-                );
+                let mut out = Mapping::from_params(params)
+                    .inverse()
+                    .rescale(1.0 / scale)
+                    .warp_image(
+                        &resized,
+                        (h as usize, w as usize),
+                        Some(Rgb([128, 128, 128])),
+                    );
                 annotate(
                     &mut out,
                     &format!("Scale: 1/{:.2}", scale),
@@ -175,11 +177,12 @@ where
         .step_by(step.unwrap_or(100))
         .enumerate()
         .for_each(|(i, map)| {
-            let img = warp_image(
-                &map.transform(None, Some(offset.clone())),
+            let img = map.transform(None, Some(offset.clone())).warp_image(
                 &frames[i],
                 (canvas_h.ceil() as usize, canvas_w.ceil() as usize),
-                None,
+                Some(*P::from_slice(
+                    &vec![<P as Pixel>::Subpixel::DEFAULT_MIN_VALUE; P::CHANNEL_COUNT as usize],
+                )),
             );
 
             let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));

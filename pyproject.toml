@@ -1,0 +1,30 @@
+[build-system]
+requires = ["maturin>=0.12.2,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "spano"
+requires-python = ">=3.6"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+]
+dynamic = ["version"]
+dependencies = [
+    "typing_extensions",
+    "numpy"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "imageio"
+]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+
+[project.scripts]
+spano = "spano:cli_entrypoint"
