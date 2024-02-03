@@ -392,13 +392,9 @@ where
 pub fn pairwise_iclk(
     frames: &Vec<GrayImage>,
     init_mappings: &[Mapping],
-    scale: f32,
     iterations: i32,
-    min_dimensions: (u32, u32),
-    max_levels: u32,
     early_stop: f32,
     patience: usize,
-    wrt: Option<f32>,
     message: Option<&str>,
 ) -> Result<Vec<Mapping>> {
     // Conditionally setup a pbar
@@ -418,39 +414,29 @@ pub fn pairwise_iclk(
         .zip(init_mappings)
         .map(|(window, init_mapping)| {
             pbar.inc(1);
-            // iclk_grayscale(
-            //     &window[0],             // im1_gray
-            //     &window[1],             // im2_gray
-            //     gradients(&window[1]),  // im2_grad,
-            //     init_mapping.clone(),   // init_mapping
-            //     Some(iterations),       // max_iters
-            //     Some(early_stop),       // stop_early
-            //     Some(patience),         // patience
-            //     None,                   // message
-            // )
-            hierarchical_iclk(
-                &window[0],           // im1_gray
-                &window[1],           // im2_gray
-                init_mapping.clone(), // init_mapping
-                Some(iterations),     // max_iters
-                min_dimensions,       // min_dimensions
-                max_levels,           // max_levels
-                Some(early_stop),     // stop_early
-                Some(patience),       // patience
-                false,                // message
+            iclk_grayscale(
+                &window[0],            // im1_gray
+                &window[1],            // im2_gray
+                gradients(&window[1]), // im2_grad,
+                init_mapping.clone(),  // init_mapping
+                Some(iterations),      // max_iters
+                Some(early_stop),      // stop_early
+                Some(patience),        // patience
+                None,                  // message
             )
-            // Drop param_history and rescale transform to full-size
-            .map(|(mapping, _)| mapping.rescale(scale))
+            // Drop param_history
+            .map(|(mapping, _)| mapping)
         })
         // Collect to force reorder
         .collect::<Result<Vec<_>>>()?;
 
-    // If wrt is None, just return raw pairwise warps (N-1 in total)
-    if wrt.is_none() {
-        return Ok(mappings);
-    }
+    // Return raw pairwise warps (N-1 in total)
+    Ok(mappings)
+}
 
-    // Otherwise we compose/accumulate them all together and apply wrt correction
+/// Compose/accumulate all pairwise mappings together and apply wrt correction
+/// such that the warp of the frame at wrt index is the identity.
+pub fn accumulate_wrt(mappings: Vec<Mapping>, wrt: f32) -> Vec<Mapping> {
     // Add in an identity warp to the start to have one warp per frame
     // TODO: maybe impl Copy to minimize the clones here...
     // TODO: Can we avoid the above collect and cumulatively compose in parallel?
@@ -463,15 +449,15 @@ pub fn pairwise_iclk(
 
     // Find wrt warp and undo it
     let wrt_map = Mapping::interpolate_scalar(
-        Array::linspace(0.0, 1.0, frames.len()).to_vec(),
+        Array::linspace(0.0, 1.0, mappings.len()).to_vec(),
         mappings.to_owned(),
-        wrt.unwrap(),
+        wrt,
     );
     let mappings: Vec<Mapping> = mappings
         .iter()
         .map(|m| m.transform(Some(wrt_map.inverse()), None))
         .collect();
-    Ok(mappings)
+    mappings
 }
 
 pub fn img_pyramid<P>(im: &Image<P>, min_dimensions: (u32, u32), max_levels: u32) -> Vec<Image<P>>

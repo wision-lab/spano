@@ -195,8 +195,8 @@ where
         Path::new(&img_dir).join("frame%06d.png").to_str().unwrap(),
         out_path.unwrap_or("out.mp4"),
         fps.unwrap_or(25u64),
-        0,
-        None,
+        frames.len() as u64,
+        Some("Stabilizing..."),
         None,
     );
     Ok(())

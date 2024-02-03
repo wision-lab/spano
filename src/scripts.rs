@@ -9,22 +9,21 @@ use image::{
     io::Reader as ImageReader,
     Rgb,
 };
-use indicatif::ProgressIterator;
-use itertools::Itertools;
-use ndarray::{concatenate, s, Array2, Array3, Axis, NewAxis, Slice};
+use ndarray::{s, Axis, Slice};
 use photoncube2video::{
     cube::{PhotonCube, VirtualExposure},
     signals::DeferedSignal,
-    transforms::{apply_transforms, array2_to_grayimage, process_colorspad, ref_image_to_array3},
+    transforms::{apply_transforms, array2_to_grayimage},
 };
 use pyo3::prelude::*;
 use rayon::iter::ParallelIterator;
 use tempfile::tempdir;
 
 use crate::{
-    blend::distance_transform,
     cli::{Cli, Commands, LKArgs, Parser},
-    lk::{hierarchical_iclk, iclk, pairwise_iclk},
+    lk::{accumulate_wrt, hierarchical_iclk, iclk, img_pyramid, pairwise_iclk},
+    pano::merge_frames,
+    transpose::TransposableIter,
     utils::{animate_hierarchical_warp, animate_warp, stabilized_video},
     warps::Mapping,
 };
@@ -149,9 +148,8 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
     args.img_dir = Some(img_dir);
 
     match &args.command {
-        None => Err(anyhow!("Only `LK` subcommand is currently implemented.")),
-        Some(Commands::LK(lk_args)) => match_imgpair(args.clone(), lk_args.clone()),
-        Some(Commands::Pano(pano_args)) => {
+        Commands::LK(lk_args) => match_imgpair(args.clone(), lk_args.clone()),
+        Commands::Pano(pano_args) => {
             let [cube_path, ..] = &args.input[..] else {
                 return Err(anyhow!(
                     "Only one input is required for --input when forming Pano."
@@ -162,22 +160,30 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
             // We unpack the bitplanes, avergae them in groups of `burst_size`,
             // Apply color-spad corrections, and optionally downscale.
             // Any transforms (i.e: flipud) can be applied here too.
+            let mut cube = PhotonCube::open(cube_path)?;
+            if let Some(cfa_path) = &pano_args.cfa_path {
+                cube.load_cfa(&cfa_path)?;
+            }
+            for inpaint_path in pano_args.inpaint_path.iter() {
+                cube.load_mask(inpaint_path)?;
+            }
+            let process_single = cube.process_single(
+                pano_args.invert_response,
+                pano_args.tonemap2srgb,
+                pano_args.colorspad_fix,
+            );
 
-            let cube = PhotonCube::open(cube_path)?;
             let view = cube.view()?;
             let slice = view.slice_axis(
                 Axis(0),
-                Slice::new(
-                    pano_args.start.unwrap_or(0),
-                    pano_args.end.or(Some(256 * 250)),
-                    1,
-                ),
+                Slice::new(pano_args.start.unwrap_or(0), pano_args.end, 1),
             );
             let virtual_exposures: Vec<_> = slice
                 .par_virtual_exposures(pano_args.burst_size, true)
                 .map(|frame| {
+                    let frame = process_single(frame).unwrap();
                     let frame = frame.mapv(|x| (x * 255.0) as u8);
-                    let mut img = array2_to_grayimage(process_colorspad(frame));
+                    let mut img = array2_to_grayimage(frame);
                     if pano_args.lk_args.downscale != 1.0 {
                         img = resize(
                             &img,
@@ -191,75 +197,47 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
                 })
                 .collect();
 
-            // Estimate pairwise registration
-            let init_mappings = vec![Mapping::identity(); virtual_exposures.len() - 1];
-            let mappings: Vec<Mapping> = pairwise_iclk(
-                &virtual_exposures,
-                &init_mappings[..],
-                1.0,
-                pano_args.lk_args.iterations,
-                (25, 25),
-                pano_args.lk_args.max_lvls,
-                pano_args.lk_args.early_stop,
-                pano_args.lk_args.patience,
-                Some(pano_args.wrt),
-                Some("Lvl 1:"),
-            )?;
-
-            stabilized_video(
-                &mappings,
-                &virtual_exposures,
-                &args.img_dir.unwrap(),
-                Some(args.viz_fps),
-                Some(args.viz_step),
-                args.viz_output.as_deref(),
-            )?;
-
-            // Make canvas for panorama
-            let sizes: Vec<_> = virtual_exposures
+            let mut pyramid: Vec<Vec<_>> = virtual_exposures
                 .iter()
-                .map(|f| (f.width() as usize, f.height() as usize))
-                .unique()
+                .map(|im| img_pyramid(im, (25, 25), pano_args.lk_args.max_lvls))
                 .collect();
-            let (extent, offset) = Mapping::maximum_extent(&mappings[..], &sizes[..]);
-            let [canvas_w, canvas_h] = extent.to_vec()[..] else {
-                unreachable!("Canvas should have width and height")
-            };
-            let (canvas_h, canvas_w) = (canvas_h.ceil() as usize, canvas_w.ceil() as usize);
-            println!(
-                "Made Canvas of size {:}x{:}, with offset {:?}",
-                &canvas_w,
-                &canvas_h,
-                &offset.get_params()
-            );
-            let mut canvas: Array3<f32> = Array3::zeros((canvas_h, canvas_w, 2));
-            let mut valid: Array2<bool> = Array2::from_elem((canvas_h, canvas_w), false);
+            pyramid.iter_mut().for_each(|p| p.reverse());
+            let num_lvls = pyramid.iter().map(|p| p.len()).min().unwrap_or(0);
 
-            let (size, _) = Mapping::maximum_extent(&[Mapping::identity()], &sizes[..]);
-            let weights = distance_transform(
-                size.map(|v| *v as usize)
-                    .into_iter()
-                    .collect_tuple()
-                    .unwrap(),
-            );
-            let weights = weights.slice(s![.., .., NewAxis]);
-            let merge = |dst: &mut [f32], src: &[f32]| {
-                dst[0] += src[0] * src[1];
-                dst[1] += src[1];
-            };
+            let mut mappings: Vec<Mapping> =
+                vec![Mapping::from_params(vec![0.0, 0.0]); virtual_exposures.len() - 1];
 
-            for (frame, map) in virtual_exposures.iter().zip(mappings).progress() {
-                let frame = ref_image_to_array3(frame).mapv(|v| v as f32);
-                let frame = concatenate(Axis(2), &[frame.view(), weights.view()])?;
-                map.warp_array3_into(
-                    &frame.as_standard_layout(),
-                    &mut canvas,
-                    &mut valid,
-                    None,
-                    None,
-                    Some(merge),
-                );
+            for (lvl, virtual_exps) in pyramid.transpose().enumerate() {
+                // Estimate pairwise registration
+                mappings = pairwise_iclk(
+                    &virtual_exps,
+                    &mappings[..],
+                    pano_args.lk_args.iterations,
+                    pano_args.lk_args.early_stop,
+                    pano_args.lk_args.patience,
+                    Some(format!("Level {}/{}:", lvl + 1, num_lvls).as_str()),
+                )?;
+
+                if args.viz_output.is_some() {
+                    stabilized_video(
+                        &accumulate_wrt(mappings.clone(), pano_args.wrt),
+                        &virtual_exps,
+                        "tmp/",
+                        Some(args.viz_fps),
+                        Some(args.viz_step),
+                        Some(format!("lvl-{}.mp4", lvl + 1).as_str()),
+                    )?;
+                }
+
+                if lvl + 1 < num_lvls {
+                    mappings = mappings.iter().map(|m| m.rescale(0.5)).collect();
+                }
             }
+
+            let canvas = merge_frames(
+                &accumulate_wrt(mappings.clone(), pano_args.wrt),
+                &virtual_exposures,
+            )?;
 
             array2_to_grayimage(
                 (canvas.slice(s![.., .., 0]).to_owned() / canvas.slice(s![.., .., 1]))

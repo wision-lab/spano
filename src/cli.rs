@@ -12,11 +12,11 @@ fn validate_normalized(p: &str) -> Result<f32, String> {
 }
 
 #[derive(Parser, Debug, Clone)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version, about, long_about = None, args_conflicts_with_subcommands = true)]
 /// Register two or more images and animate optimization process.
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Option<Commands>,
+    pub command: Commands,
 
     /// Path of images to register, two are expected when matching images
     #[arg(short, long, num_args(..2), global=true)]
@@ -98,6 +98,26 @@ pub struct PanoArgs {
     /// Number of frames to average together
     #[arg(long, default_value_t = 256)]
     pub burst_size: usize,
+
+    /// If enabled, invert the SPAD's response (Bernoulli process)
+    #[arg(long, action)]
+    pub invert_response: bool,
+
+    /// If enabled, apply sRGB tonemapping to output
+    #[arg(long, action)]
+    pub tonemap2srgb: bool,
+
+    /// If enabled, swap columns that are out of order and crop to 254x496
+    #[arg(long, action)]
+    pub colorspad_fix: bool,
+
+    /// Path of color filter array to use for demosaicing
+    #[arg(long, default_value = None)]
+    pub cfa_path: Option<String>,
+
+    /// Path of inpainting mask to use for filtering out dead/hot pixels
+    #[arg(long, num_args(0..))]
+    pub inpaint_path: Vec<String>,
 }
 
 #[derive(Subcommand, Debug, Clone)]

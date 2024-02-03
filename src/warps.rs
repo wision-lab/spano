@@ -458,12 +458,13 @@ impl Mapping {
     pub fn get_params(&self) -> Vec<f32> {
         let p = (&self.mat.clone() / self.mat[(2, 2)]).into_raw_vec();
         match &self.kind {
+            TransformationType::Identity => vec![],
             TransformationType::Translational => vec![p[2], p[5]],
             TransformationType::Affine => vec![p[0] - 1.0, p[3], p[1], p[4] - 1.0, p[2], p[5]],
             TransformationType::Projective => {
                 vec![p[0] - 1.0, p[3], p[1], p[4] - 1.0, p[2], p[5], p[6], p[7]]
             }
-            _ => panic!("Transformation cannot be unknown!"),
+            TransformationType::Unknown => panic!("Transformation cannot be unknown!"),
         }
     }
 
