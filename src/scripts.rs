@@ -58,6 +58,7 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
             Some(lk_args.iterations),
             Some(lk_args.early_stop),
             Some(lk_args.patience),
+            Some("Matching...")
         )?;
         let num_steps = params_history.len();
 

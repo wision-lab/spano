@@ -1,15 +1,14 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use image::io::Reader as ImageReader;
+use image::{imageops::{resize, FilterType::CatmullRom}, io::Reader as ImageReader};
 use ndarray::{array, Array3};
 #[cfg(target_os = "linux")]
 use pprof::criterion::{Output, PProfProfiler};
 use spano::{
-    blend::distance_transform,
-    warps::{Mapping, TransformationType},
+    blend::distance_transform, lk::iclk, warps::{Mapping, TransformationType}
 };
 
 pub fn benchmark_warp_array3(c: &mut Criterion) {
-    let img = ImageReader::open("assets/madison1.png")
+    let img = ImageReader::open("tests/source.png")
         .unwrap()
         .decode()
         .unwrap()
@@ -48,6 +47,37 @@ pub fn benchmark_distance_transform(c: &mut Criterion) {
     });
 }
 
+pub fn benchmark_iclk(c: &mut Criterion) {
+    let img_src = ImageReader::open("tests/source.png")
+        .unwrap()
+        .decode()
+        .unwrap()
+        .into_rgb8();
+    let img_src = resize(&img_src, 640/4, 480/4, CatmullRom);
+
+    let img_dst = ImageReader::open("tests/warped.png")
+        .unwrap()
+        .decode()
+        .unwrap()
+        .into_rgb8();
+    let img_dst = resize(&img_dst, 640/4, 480/4, CatmullRom);
+
+    c.bench_function("distance_iclk", |b| {
+        b.iter(|| {
+            // No patience, 25 iters, no early-stop.
+            let (_map, _) = iclk(
+                &img_src,
+                &img_dst,
+                Mapping::from_params(vec![0.0; 8]),
+                Some(25),
+                Some(1e-12),
+                Some(1),
+                None
+            ).unwrap();
+        })
+    });
+}
+
 #[cfg(target_os = "linux")]
 criterion_group! {
     name = benches;
@@ -57,14 +87,16 @@ criterion_group! {
         );
     targets =
         benchmark_warp_array3,
-        benchmark_distance_transform
+        benchmark_distance_transform,
+        benchmark_iclk
 }
 
 #[cfg(not(target_os = "linux"))]
 criterion_group! {
     benches,
     benchmark_warp_array3,
-    benchmark_distance_transform
+    benchmark_distance_transform,
+    benchmark_iclk
 }
 
 criterion_main!(benches);

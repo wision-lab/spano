@@ -45,6 +45,7 @@ pub fn iclk<P>(
     max_iters: Option<i32>,
     stop_early: Option<f32>,
     patience: Option<usize>,
+    message: Option<&str>
 ) -> Result<(Mapping, Vec<Vec<f32>>)>
 where
     P: Pixel + Send + Sync,
@@ -64,7 +65,7 @@ where
         max_iters,
         stop_early,
         patience,
-        Some(""),
+        message,
     )
 }
 
@@ -361,7 +362,7 @@ where
 
         // Perform optimization at lvl
         let params_history;
-        let msg = format!("Using scale 1/{:}", &current_scale);
+        let msg = format!("Matching scale 1/{:}", &current_scale);
         let msg = if message { Some(msg) } else { None };
         (mapping, params_history) = iclk_grayscale(
             im1,
