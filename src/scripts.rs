@@ -7,13 +7,13 @@ use anyhow::{anyhow, Result};
 use image::{
     imageops::{resize, FilterType},
     io::Reader as ImageReader,
-    Rgb,
+    Luma, Rgb,
 };
-use ndarray::{s, Axis, Slice};
+use ndarray::{Axis, Slice};
 use photoncube2video::{
     cube::{PhotonCube, VirtualExposure},
     signals::DeferedSignal,
-    transforms::{apply_transforms, array2_to_grayimage},
+    transforms::{apply_transforms, array2_to_grayimage, array3_to_image},
 };
 use pyo3::prelude::*;
 use rayon::iter::ParallelIterator;
@@ -58,7 +58,7 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
             Some(lk_args.iterations),
             Some(lk_args.early_stop),
             Some(lk_args.patience),
-            Some("Matching...")
+            Some("Matching..."),
         )?;
         let num_steps = params_history.len();
 
@@ -206,7 +206,7 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
             let num_lvls = pyramid.iter().map(|p| p.len()).min().unwrap_or(0);
 
             let mut mappings: Vec<Mapping> =
-                vec![Mapping::from_params(vec![0.0, 0.0]); virtual_exposures.len() - 1];
+                vec![Mapping::from_params(vec![0.0; 2]); virtual_exposures.len() - 1];
 
             for (lvl, virtual_exps) in pyramid.transpose().enumerate() {
                 // Estimate pairwise registration
@@ -238,13 +238,11 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
             let canvas = merge_frames(
                 &accumulate_wrt(mappings.clone(), pano_args.wrt),
                 &virtual_exposures,
+                None,
             )?;
 
-            array2_to_grayimage(
-                (canvas.slice(s![.., .., 0]).to_owned() / canvas.slice(s![.., .., 1]))
-                    .mapv(|v| v as u8),
-            )
-            .save(&args.output.unwrap_or("out.png".to_string()))?;
+            array3_to_image::<Luma<u8>>(canvas.mapv(|v| v as u8))
+                .save(&args.output.unwrap_or("out.png".to_string()))?;
             Ok(())
         }
     }

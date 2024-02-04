@@ -45,7 +45,7 @@ pub fn iclk<P>(
     max_iters: Option<i32>,
     stop_early: Option<f32>,
     patience: Option<usize>,
-    message: Option<&str>
+    message: Option<&str>,
 ) -> Result<(Mapping, Vec<Vec<f32>>)>
 where
     P: Pixel + Send + Sync,

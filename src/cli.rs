@@ -73,6 +73,10 @@ pub struct LKArgs {
     #[arg(long, default_value_t = 8)]
     pub max_lvls: u32,
 
+    /// Minimum edge length of image at smallest level (only used when `--multi`)
+    #[arg(long, default_value_t = 25)]
+    pub min_size: u32,
+
     /// Save parameters of optimization to file
     #[arg(long)]
     pub params_path: Option<String>,

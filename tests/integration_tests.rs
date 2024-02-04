@@ -40,8 +40,8 @@ fn test_warp_img() {
 fn test_lk() {
     let map = Mapping::from_matrix(
         array![
-            [0.4479, -0.0426, 79.3745],  
-            [-0.1567, 0.6156, 39.4790],  
+            [0.4479, -0.0426, 79.3745],
+            [-0.1567, 0.6156, 39.4790],
             [-0.0006, -0.0001, 0.8669]
         ],
         TransformationType::Projective,
@@ -73,7 +73,7 @@ fn test_lk() {
 
     // Allow 5% error in corner coordinates
     assert_relative_eq!(
-        estimated_map.corners((480, 640)), 
+        estimated_map.corners((480, 640)),
         map.corners((480, 640)),
         max_relative = 0.05
     );
