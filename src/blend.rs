@@ -1,4 +1,12 @@
-use ndarray::{azip, s, stack, Array, Array1, Array2, Axis};
+use anyhow::{anyhow, Result};
+use image::Pixel;
+use imageproc::definitions::{Clamp, Image};
+use itertools::Itertools;
+use ndarray::{
+    azip, concatenate, s, stack, Array, Array1, Array2, Array3, ArrayBase, Axis, Ix3, NewAxis,
+    RawData,
+};
+use photoncube2video::transforms::{array3_to_image, ref_image_to_array3};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use crate::warps::Mapping;
@@ -77,4 +85,85 @@ pub fn polygon_sdf(points: &Array2<f32>, vertices: &Array2<f32>) -> Array1<f32> 
     }
 
     s * d.mapv(|v| v.sqrt())
+}
+
+/// Merge frames using simple linear blending
+/// If size (height, width) is specified, that will be used as the canvas size,
+/// otherwise, find smallest canvas size that fits all warps.
+pub fn merge_arrays<S>(
+    mappings: &[Mapping],
+    frames: &[ArrayBase<S, Ix3>],
+    size: Option<(usize, usize)>,
+) -> Result<Array3<f32>>
+where
+    S: RawData<Elem = f32> + ndarray::Data,
+{
+    let [frame_size] = frames
+        .iter()
+        .map(|f| f.dim())
+        .unique()
+        .collect::<Vec<(usize, usize, usize)>>()[..]
+    else {
+        return Err(anyhow!("All frames must have same size."));
+    };
+    let (h, w, c) = frame_size;
+
+    let ((canvas_h, canvas_w), offset) = if let Some(val) = size {
+        (val, Mapping::identity())
+    } else {
+        let (extent, offset) = Mapping::maximum_extent(&mappings[..], &[(w, h)]);
+        let (canvas_w, canvas_h) = extent
+            .iter()
+            .collect_tuple()
+            .expect("Canvas should have width and height");
+        ((canvas_h.ceil() as usize, canvas_w.ceil() as usize), offset)
+    };
+
+    let mut canvas: Array3<f32> = Array3::zeros((canvas_h, canvas_w, (c + 1) as usize));
+    let mut valid: Array2<bool> = Array2::from_elem((canvas_h, canvas_w), false);
+
+    let weights = distance_transform((w, h));
+    let weights = weights.slice(s![.., .., NewAxis]);
+    let merge = |dst: &mut [f32], src: &[f32]| {
+        dst[0] += src[0] * src[1];
+        dst[1] += src[1];
+    };
+
+    for (frame, map) in frames.iter().zip(mappings) {
+        let frame = concatenate(Axis(2), &[frame.view(), weights.view()])?;
+        map.transform(None, Some(offset.clone()))
+            .warp_array3_into::<_, f32>(
+                &frame.as_standard_layout(),
+                &mut canvas,
+                &mut valid,
+                None,
+                None,
+                Some(merge),
+            );
+    }
+
+    let canvas =
+        canvas.slice(s![.., .., ..(c as usize)]).to_owned() / canvas.slice(s![.., .., -1..]);
+    Ok(canvas)
+}
+
+/// Wrapper for `merge_arrays` that converts to/from images.
+pub fn merge_images<P>(
+    mappings: &[Mapping],
+    frames: &[Image<P>],
+    size: Option<(usize, usize)>,
+) -> Result<Image<P>>
+where
+    P: Pixel + Send + Sync,
+    f32: From<<P as Pixel>::Subpixel>,
+    <P as Pixel>::Subpixel: Clamp<f32>,
+{
+    let frames: Vec<_> = frames
+        .iter()
+        .map(|f| ref_image_to_array3(f).mapv(|v| f32::from(v)))
+        .collect();
+    let merged = merge_arrays(mappings, &frames[..], size)?;
+    Ok(array3_to_image(
+        merged.mapv(|v| <P as Pixel>::Subpixel::clamp(v)),
+    ))
 }

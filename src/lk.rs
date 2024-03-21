@@ -12,7 +12,7 @@ use imageproc::{
     gradients::{HORIZONTAL_SOBEL, VERTICAL_SOBEL},
 };
 use indicatif::{ProgressBar, ProgressStyle};
-use itertools::{chain, izip};
+use itertools::izip;
 use ndarray::{
     array, par_azip, s, stack, Array, Array1, Array2, Array3, ArrayBase, ArrayView, Axis, NewAxis,
 };
@@ -433,32 +433,6 @@ pub fn pairwise_iclk(
 
     // Return raw pairwise warps (N-1 in total)
     Ok(mappings)
-}
-
-/// Compose/accumulate all pairwise mappings together and apply wrt correction
-/// such that the warp of the frame at wrt index is the identity.
-pub fn accumulate_wrt(mappings: Vec<Mapping>, wrt: f32) -> Vec<Mapping> {
-    // Add in an identity warp to the start to have one warp per frame
-    // TODO: maybe impl Copy to minimize the clones here...
-    // TODO: Can we avoid the above collect and cumulatively compose in parallel?
-    let mappings: Vec<_> = chain([Mapping::identity()], mappings)
-        .scan(Mapping::identity(), |acc, x| {
-            *acc = acc.transform(None, Some(x.clone()));
-            Some(acc.clone())
-        })
-        .collect();
-
-    // Find wrt warp and undo it
-    let wrt_map = Mapping::interpolate_scalar(
-        Array::linspace(0.0, 1.0, mappings.len()).to_vec(),
-        mappings.to_owned(),
-        wrt,
-    );
-    let mappings: Vec<Mapping> = mappings
-        .iter()
-        .map(|m| m.transform(Some(wrt_map.inverse()), None))
-        .collect();
-    mappings
 }
 
 pub fn img_pyramid<P>(im: &Image<P>, min_dimensions: (u32, u32), max_levels: u32) -> Vec<Image<P>>

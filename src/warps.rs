@@ -5,7 +5,7 @@ use conv::ValueInto;
 use heapless::Vec as hVec;
 use image::Pixel;
 use imageproc::definitions::{Clamp, Image};
-use itertools::multizip;
+use itertools::{chain, multizip};
 use ndarray::{
     array, concatenate, s, stack, Array, Array1, Array2, Array3, ArrayBase, Axis, Ix3, RawData,
 };
@@ -451,6 +451,60 @@ impl Mapping {
             .axis_iter(Axis(0))
             .map(|p| Self::from_params(p.to_vec()))
             .collect()
+    }
+
+    /// Compose/accumulate all pairwise mappings together.
+    #[staticmethod]
+    #[pyo3(text_signature = "(mappings: List[Self]) -> List[Self]")]
+    pub fn accumulate(mappings: Vec<Self>) -> Vec<Self> {
+        // Add in an identity warp to the start to have one warp per frame
+        // TODO: maybe impl Copy to minimize the clones here...
+        // TODO: Can we avoid the above collect and cumulatively compose in parallel?
+        chain([Mapping::identity()], mappings)
+            .scan(Mapping::identity(), |acc, x| {
+                *acc = acc.transform(None, Some(x.clone()));
+                Some(acc.clone())
+            })
+            .collect()
+    }
+
+    /// Apply wrt correction such that the wrt warp becomes the identity.
+    #[staticmethod]
+    #[pyo3(text_signature = "(mappings: List[Self], wrt_map: Self) -> List[Self]")]
+    pub fn with_respect_to(mappings: Vec<Self>, wrt_map: Self) -> Vec<Self> {
+        mappings
+            .iter()
+            .map(|m| m.transform(Some(wrt_map.inverse()), None))
+            .collect()
+    }
+
+    /// Apply wrt correction such that the interpolated warp at the
+    /// normalized [0, 1] wrt_idx becomes the identity.
+    #[staticmethod]
+    #[pyo3(text_signature = "(mappings: List[Self], wrt_idx: float) -> List[Self]")]
+    pub fn with_respect_to_idx(mappings: Vec<Self>, wrt_idx: f32) -> Vec<Self> {
+        let wrt_map = Mapping::interpolate_scalar(
+            Array::linspace(0.0, 1.0, mappings.len()).to_vec(),
+            mappings.to_owned(),
+            wrt_idx,
+        );
+        Self::with_respect_to(mappings, wrt_map)
+    }
+
+    /// Compose/accumulate all pairwise mappings together and apply wrt_idx correction
+    /// such that the warp of the frame at the normalized [0, 1] wrt index is the identity.
+    /// This effectively accumulates the warps, interpolates them to find the
+    /// wrp mapping and then uses `with_respect_to_idx` to undo wrt mapping.
+    #[staticmethod]
+    #[pyo3(text_signature = "(mappings: List[Self], wrt_idx: float) -> List[Self]")]
+    pub fn accumulate_wrt_idx(mappings: Vec<Self>, wrt_idx: f32) -> Vec<Self> {
+        let mappings = Self::accumulate(mappings);
+        let wrt_map = Mapping::interpolate_scalar(
+            Array::linspace(0.0, 1.0, mappings.len()).to_vec(),
+            mappings.to_owned(),
+            wrt_idx,
+        );
+        Self::with_respect_to(mappings, wrt_map)
     }
 
     /// Get minimum number of parameters that describe the Mapping.

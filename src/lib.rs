@@ -3,7 +3,6 @@
 pub mod blend;
 pub mod cli;
 pub mod lk;
-pub mod pano;
 pub mod scripts;
 pub mod transpose;
 pub mod utils;

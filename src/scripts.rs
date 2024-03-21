@@ -7,23 +7,25 @@ use anyhow::{anyhow, Result};
 use image::{
     imageops::{resize, FilterType},
     io::Reader as ImageReader,
-    Luma, Rgb,
+    Rgb,
 };
-use ndarray::{Axis, Slice};
+use ndarray::{s, Array1, Axis, NewAxis, Slice};
 use photoncube2video::{
-    cube::{PhotonCube, VirtualExposure},
+    cube::PhotonCube,
     signals::DeferedSignal,
-    transforms::{apply_transforms, array2_to_grayimage, array3_to_image},
+    transforms::{
+        apply_transforms, array2_to_grayimage, interpolate_where_mask, process_colorspad,
+        unpack_single,
+    },
 };
+use rayon::{iter::{IntoParallelIterator, ParallelIterator}, slice::ParallelSlice};
 use pyo3::prelude::*;
-use rayon::iter::ParallelIterator;
 use tempfile::tempdir;
 
 use crate::{
+    blend::{merge_arrays, merge_images},
     cli::{Cli, Commands, LKArgs, Parser},
-    lk::{accumulate_wrt, hierarchical_iclk, iclk, img_pyramid, pairwise_iclk},
-    pano::merge_frames,
-    transpose::TransposableIter,
+    lk::{hierarchical_iclk, iclk, pairwise_iclk},
     utils::{animate_hierarchical_warp, animate_warp, stabilized_video},
     warps::Mapping,
 };
@@ -168,81 +170,137 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
             for inpaint_path in pano_args.inpaint_path.iter() {
                 cube.load_mask(inpaint_path)?;
             }
-            let process_single = cube.process_single(
-                pano_args.invert_response,
-                pano_args.tonemap2srgb,
-                pano_args.colorspad_fix,
-            );
 
             let view = cube.view()?;
             let slice = view.slice_axis(
                 Axis(0),
                 Slice::new(pano_args.start.unwrap_or(0), pano_args.end, 1),
             );
-            let virtual_exposures: Vec<_> = slice
-                .par_virtual_exposures(pano_args.burst_size, true)
-                .map(|frame| {
-                    let frame = process_single(frame).unwrap();
-                    let frame = frame.mapv(|x| (x * 255.0) as u8);
-                    let mut img = array2_to_grayimage(frame);
-                    if pano_args.lk_args.downscale != 1.0 {
-                        img = resize(
-                            &img,
-                            (img.width() as f32 / pano_args.lk_args.downscale).round() as u32,
-                            (img.height() as f32 / pano_args.lk_args.downscale).round() as u32,
+
+            let (_, h, w) = view.dim();
+            let (lvls_h, lvls_w) = (
+                f32::log2(
+                    h as f32
+                        / pano_args.lk_args.downscale as f32
+                        / pano_args.lk_args.min_size as f32,
+                )
+                .ceil(),
+                f32::log2(
+                    w as f32
+                        / pano_args.lk_args.downscale as f32
+                        / pano_args.lk_args.min_size as f32
+                        * 8.0,
+                )
+                .ceil(),
+            );
+            let num_lvls = (lvls_h as u32)
+                .min(lvls_w as u32)
+                .min(pano_args.lk_args.max_lvls);
+            println!("{h}, {w}, {num_lvls}");
+
+            let num_ves = view.len_of(Axis(0)) / pano_args.burst_size;
+            let mut mappings: Vec<Mapping> = vec![Mapping::from_params(vec![0.0; 2]); num_ves - 1];
+            let mut virtual_exposures: Vec<_> = vec![];
+
+            for lvl in (1..=num_lvls).rev() {
+                // Interpolate mappings to all bitplanes
+                let acc_maps = Mapping::accumulate(mappings.clone());
+                let interpd_maps = Mapping::interpolate_array(
+                    Array1::linspace(0.0, 1.0, num_ves).to_vec(),
+                    acc_maps,
+                    Array1::linspace(0.0, 1.0, (num_ves-1) * pano_args.burst_size).to_vec(),
+                );
+
+                let downscale = 2 << lvl;
+
+                virtual_exposures = (
+                    slice.axis_chunks_iter(Axis(0), pano_args.burst_size),
+                    interpd_maps.par_chunks(pano_args.burst_size)
+                )
+                    .into_par_iter()
+                    .map(|(group, maps)| {
+                        let frame = {
+                            // Iterate over all bitplanes in group,
+                            // Unpack every frame in group as a f32 array
+                            // Apply any corrections and blend them together
+                            let frames: Vec<_> = group
+                                .axis_iter(Axis(0))
+                                .map(|bitplane| {
+                                    let mut frame = unpack_single::<f32>(&bitplane, 1).unwrap();
+
+                                    // Apply any frame-level fixes (only for ColorSPAD at the moment)
+                                    if pano_args.colorspad_fix {
+                                        frame = process_colorspad(frame);
+                                    }
+
+                                    // Demosaic frame by interpolating white pixels
+                                    if let Some(mask) = &cube.cfa_mask {
+                                        frame = interpolate_where_mask(&frame, mask, true).unwrap();
+                                    }
+
+                                    // Inpaint any hot/dead pixels
+                                    if let Some(mask) = &cube.inpaint_mask {
+                                        frame = interpolate_where_mask(&frame, mask, true).unwrap();
+                                    }
+
+                                    frame.slice(s![.., .., NewAxis]).to_owned()
+                                })
+                                .collect();
+                            merge_arrays(
+                                &Mapping::with_respect_to_idx(maps.to_vec(), 0.5),
+                                &frames[..],
+                                Some((h, w)),
+                            )
+                            .unwrap()
+                        };
+
+                        let img = resize(
+                            &array2_to_grayimage(
+                                frame.slice(s![.., .., 0]).mapv(|v| (v * 255.0) as u8),
+                            ),
+                            (w as f32 / downscale as f32).round() as u32,
+                            (h as f32 / downscale as f32).round() as u32,
                             FilterType::CatmullRom,
                         );
-                    }
 
-                    apply_transforms(img, &args.transform[..])
-                })
-                .collect();
+                        apply_transforms(img, &args.transform[..])
+                    })
+                    .collect();
 
-            let mut pyramid: Vec<Vec<_>> = virtual_exposures
-                .iter()
-                .map(|im| img_pyramid(im, (25, 25), pano_args.lk_args.max_lvls))
-                .collect();
-            pyramid.iter_mut().for_each(|p| p.reverse());
-            let num_lvls = pyramid.iter().map(|p| p.len()).min().unwrap_or(0);
-
-            let mut mappings: Vec<Mapping> =
-                vec![Mapping::from_params(vec![0.0; 2]); virtual_exposures.len() - 1];
-
-            for (lvl, virtual_exps) in pyramid.transpose().enumerate() {
                 // Estimate pairwise registration
                 mappings = pairwise_iclk(
-                    &virtual_exps,
+                    &virtual_exposures,
                     &mappings[..],
                     pano_args.lk_args.iterations,
                     pano_args.lk_args.early_stop,
                     pano_args.lk_args.patience,
-                    Some(format!("Level {}/{}:", lvl + 1, num_lvls).as_str()),
+                    Some(format!("Level {}/{}:", num_lvls - lvl + 1, num_lvls).as_str()),
                 )?;
 
                 if args.viz_output.is_some() {
                     stabilized_video(
-                        &accumulate_wrt(mappings.clone(), pano_args.wrt),
-                        &virtual_exps,
+                        &Mapping::accumulate_wrt_idx(mappings.clone(), pano_args.wrt),
+                        &virtual_exposures,
                         "tmp/",
                         Some(args.viz_fps),
                         Some(args.viz_step),
-                        Some(format!("lvl-{}.mp4", lvl + 1).as_str()),
+                        Some(format!("lvl-{}.mp4", num_lvls - lvl + 1).as_str()),
                     )?;
                 }
 
-                if lvl + 1 < num_lvls {
+                if lvl > 1 {
                     mappings = mappings.iter().map(|m| m.rescale(0.5)).collect();
                 }
             }
+            // ----------------------------------------------------------------------------------
 
-            let canvas = merge_frames(
-                &accumulate_wrt(mappings.clone(), pano_args.wrt),
+            let canvas = merge_images(
+                &Mapping::accumulate_wrt_idx(mappings.clone(), pano_args.wrt),
                 &virtual_exposures,
                 None,
             )?;
 
-            array3_to_image::<Luma<u8>>(canvas.mapv(|v| v as u8))
-                .save(&args.output.unwrap_or("out.png".to_string()))?;
+            canvas.save(&args.output.unwrap_or("out.png".to_string()))?;
             Ok(())
         }
     }
