@@ -9,9 +9,8 @@ use image::{
 use imageproc::{
     definitions::{Clamp, Image},
     filter::filter3x3,
-    gradients::{HORIZONTAL_SOBEL, VERTICAL_SOBEL},
+    gradients::{HORIZONTAL_SCHARR, VERTICAL_SCHARR},
 };
-use indicatif::{ProgressBar, ProgressStyle};
 use itertools::izip;
 use ndarray::{
     array, par_azip, s, stack, Array, Array1, Array2, Array3, ArrayBase, ArrayView, Axis, NewAxis,
@@ -21,9 +20,12 @@ use nshare::ToNdarray2;
 use photoncube2video::transforms::image_to_array3;
 use rayon::prelude::*;
 
-use crate::warps::{Mapping, TransformationType};
+use crate::{
+    utils::get_pbar,
+    warps::{Mapping, TransformationType},
+};
 
-/// Compute image gradients using Sobel operator
+/// Compute image gradients using Scharr operator
 /// Returned (dx, dy) pair as HxW arrays.
 pub fn gradients<T>(img: &Image<Luma<T>>) -> (Array2<f32>, Array2<f32>)
 where
@@ -31,8 +33,8 @@ where
     f32: ValueFrom<T>,
 {
     (
-        filter3x3(img, &HORIZONTAL_SOBEL.map(|v| v as f32)).into_ndarray2(),
-        filter3x3(img, &VERTICAL_SOBEL.map(|v| v as f32)).into_ndarray2(),
+        filter3x3(img, &HORIZONTAL_SCHARR.map(|v| v as f32)).into_ndarray2(),
+        filter3x3(img, &VERTICAL_SCHARR.map(|v| v as f32)).into_ndarray2(),
     )
 }
 
@@ -246,17 +248,7 @@ where
             ))
         }
     };
-
-    // Conditionally setup a pbar
-    let pbar = if let Some(msg) = message {
-        ProgressBar::new(max_iters.unwrap_or(250) as u64)
-            .with_style(ProgressStyle::with_template(
-                "{msg} ETA:{eta}, [{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>6}/{len:6}",
-            )?)
-            .with_message(msg.to_owned())
-    } else {
-        ProgressBar::hidden()
-    };
+    let pbar = get_pbar(max_iters.unwrap_or(250) as usize, message);
 
     // Main optimization loop
     for i in 0..max_iters.unwrap_or(250) {
@@ -318,6 +310,7 @@ where
             break;
         }
     }
+    pbar.finish_and_clear();
 
     Ok((Mapping::from_params(params).inverse(), params_history))
 }
@@ -398,16 +391,7 @@ pub fn pairwise_iclk(
     patience: usize,
     message: Option<&str>,
 ) -> Result<Vec<Mapping>> {
-    // Conditionally setup a pbar
-    let pbar = if let Some(msg) = message {
-        ProgressBar::new((frames.len() - 1) as u64)
-            .with_style(ProgressStyle::with_template(
-                "{msg} ETA:{eta}, [{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>6}/{len:6}",
-            )?)
-            .with_message(msg.to_owned())
-    } else {
-        ProgressBar::hidden()
-    };
+    let pbar = get_pbar(frames.len() - 1, message);
 
     // Iterate over sliding window of pairwise frames (in parallel!)
     let mappings: Vec<Mapping> = frames
@@ -416,14 +400,14 @@ pub fn pairwise_iclk(
         .map(|(window, init_mapping)| {
             pbar.inc(1);
             iclk_grayscale(
-                &window[0],            // im1_gray
-                &window[1],            // im2_gray
-                gradients(&window[1]), // im2_grad,
-                init_mapping.clone(),  // init_mapping
-                Some(iterations),      // max_iters
-                Some(early_stop),      // stop_early
-                Some(patience),        // patience
-                None,                  // message
+                &window[0],
+                &window[1],
+                gradients(&window[1]),
+                init_mapping.clone(),
+                Some(iterations),
+                Some(early_stop),
+                Some(patience),
+                None,
             )
             // Drop param_history
             .map(|(mapping, _)| mapping)
@@ -432,6 +416,7 @@ pub fn pairwise_iclk(
         .collect::<Result<Vec<_>>>()?;
 
     // Return raw pairwise warps (N-1 in total)
+    pbar.finish_and_clear();
     Ok(mappings)
 }
 

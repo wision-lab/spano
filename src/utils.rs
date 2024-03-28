@@ -12,17 +12,33 @@ use image::{
     EncodableLayout, Pixel, PixelWithColorType, Primitive, Rgb,
 };
 use imageproc::definitions::{Clamp, Image};
+use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
 use photoncube2video::{
     ffmpeg::{ensure_ffmpeg, make_video},
     transforms::annotate,
 };
-use rayon::iter::{
-    IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
-};
+use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 
 use crate::warps::Mapping;
 
+/// Conditionally setup a progressbar
+pub fn get_pbar(len: usize, message: Option<&str>) -> ProgressBar {
+    if let Some(msg) = message {
+        ProgressBar::new(len as u64)
+            .with_style(
+                ProgressStyle::with_template(
+                    "{msg} ETA:{eta}, [{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>6}/{len:6}",
+                )
+                .expect("Invalid progress style."),
+            )
+            .with_message(msg.to_owned())
+    } else {
+        ProgressBar::hidden()
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn animate_warp(
     img_path: &str,
     params_history: Vec<Vec<f32>>,
@@ -31,6 +47,7 @@ pub fn animate_warp(
     fps: Option<u64>,
     step: Option<usize>,
     out_path: Option<&str>,
+    message: Option<&str>,
 ) -> Result<()> {
     let img = ImageReader::open(img_path)?.decode()?.into_rgb8();
     let (w, h) = img.dimensions();
@@ -41,6 +58,7 @@ pub fn animate_warp(
     }
     create_dir_all(img_dir)?;
 
+    let pbar = get_pbar(params_history.len(), message);
     params_history
         .into_par_iter()
         .step_by(step.unwrap_or(100))
@@ -54,7 +72,9 @@ pub fn animate_warp(
             let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
             out.save(&path)
                 .unwrap_or_else(|_| panic!("Could not save frame at {}!", &path.display()));
+            pbar.inc(step.unwrap_or(100) as u64);
         });
+    pbar.finish_and_clear();
 
     ensure_ffmpeg(true);
     make_video(
@@ -68,6 +88,7 @@ pub fn animate_warp(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn animate_hierarchical_warp(
     img_path: &str,
     all_params_history: HashMap<u32, Vec<Vec<f32>>>,
@@ -76,6 +97,7 @@ pub fn animate_hierarchical_warp(
     fps: Option<u64>,
     step: Option<usize>,
     out_path: Option<&str>,
+    message: Option<&str>,
 ) -> Result<()> {
     let img = ImageReader::open(img_path)?.decode()?.into_rgb8();
     let (w, h) = img.dimensions();
@@ -86,6 +108,9 @@ pub fn animate_hierarchical_warp(
         remove_dir_all(img_dir)?;
     }
     create_dir_all(img_dir)?;
+
+    let num_frames: usize = all_params_history.iter().map(|x| x.1.len()).sum();
+    let pbar = get_pbar(num_frames, message);
 
     for (scale, params_history) in all_params_history.into_iter().sorted_by_key(|x| x.0).rev() {
         // This is not super efficient, but it's debug/viz code...
@@ -125,9 +150,11 @@ pub fn animate_hierarchical_warp(
                 let path = Path::new(&img_dir).join(format!("frame{:06}.png", i + offset));
                 out.save(&path)
                     .unwrap_or_else(|_| panic!("Could not save frame at {}!", &path.display()));
+                pbar.inc(step.unwrap_or(100) as u64)
             })
             .count();
     }
+    pbar.finish_and_clear();
 
     ensure_ffmpeg(true);
     make_video(
@@ -148,6 +175,7 @@ pub fn stabilized_video<P>(
     fps: Option<u64>,
     step: Option<usize>,
     out_path: Option<&str>,
+    message: Option<&str>,
 ) -> Result<()>
 where
     P: Pixel + PixelWithColorType + Send + Sync,
@@ -171,14 +199,15 @@ where
     let [canvas_w, canvas_h] = extent.to_vec()[..] else {
         unreachable!("Canvas should have width and height")
     };
+    let pbar = get_pbar(frames.len(), message);
 
-    mappings
-        .par_iter()
+    (mappings, frames)
+        .into_par_iter()
         .step_by(step.unwrap_or(100))
         .enumerate()
-        .for_each(|(i, map)| {
+        .for_each(|(i, (map, frame))| {
             let img = map.transform(None, Some(offset.clone())).warp_image(
-                &frames[i],
+                frame,
                 (canvas_h.ceil() as usize, canvas_w.ceil() as usize),
                 Some(*P::from_slice(
                     &vec![<P as Pixel>::Subpixel::DEFAULT_MIN_VALUE; P::CHANNEL_COUNT as usize],
@@ -188,7 +217,9 @@ where
             let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
             img.save(&path)
                 .unwrap_or_else(|_| panic!("Could not save frame at {}!", &path.display()));
+            pbar.inc(step.unwrap_or(100) as u64);
         });
+    pbar.finish_and_clear();
 
     ensure_ffmpeg(true);
     make_video(

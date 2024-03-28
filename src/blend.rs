@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use cached::proc_macro::cached;
 use image::Pixel;
 use imageproc::definitions::{Clamp, Image};
 use itertools::Itertools;
@@ -12,8 +13,36 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use crate::warps::Mapping;
 
 /// Computes normalized and clipped distance transform (bwdist) for rectangle that fills image
+/// The MATLAB version of this uses a different algorithm, which is much faster but less general.
+/// Here, we simply cache the result instead.
+///
+/// References:
+///     Breu, Heinz, Joseph Gil, David Kirkpatrick, and Michael Werman, "Linear Time Euclidean
+///     Distance Transform Algorithms," IEEE Transactions on Pattern Analysis and Machine
+///     Intelligence, Vol. 17, No. 5, May 1995, pp. 529-533.
+#[cached(sync_writes = true)]
 pub fn distance_transform(size: (usize, usize)) -> Array2<f32> {
     polygon_distance_transform(&Mapping::identity().corners(size), size)
+
+    // let (w, h) = size;
+    // let corners = vec![(0.0, 0.0), (w as f32, 0.0), (w as f32, h as f32), (0.0, h as f32)];
+    // let dist = |q| corners.iter().circular_tuple_windows().map(|(p1, p2)| distance_to_line(*p1, *p2, q)).fold(f32::INFINITY, |a, b| a.min(b));
+    // let max_dist = dist((w as f32 / 2.0, h as f32 / 2.0));
+
+    // Array::from_shape_fn((h, w), |(i, j)| {
+    //     dist((j as f32, i as f32)) / max_dist
+    // })
+}
+
+/// Find distance to line defined by two points
+/// See: https://en.wikipedia.org/wiki/Distance_from_a_point_to_a_line
+pub fn distance_to_line(p1: (f32, f32), p2: (f32, f32), query: (f32, f32)) -> f32 {
+    let (x1, y1) = p1;
+    let (x2, y2) = p2;
+    let (x0, y0) = query;
+
+    ((x2 - x1) * (y1 - y0) - (x1 - x0) * (y2 - y1)).abs()
+        / ((x2 - x1).powf(2.0) + (y2 - y1).powf(2.0)).sqrt()
 }
 
 /// Computes normalized and clipped distance transform (bwdist) for arbitray polygon
@@ -111,7 +140,7 @@ where
     let ((canvas_h, canvas_w), offset) = if let Some(val) = size {
         (val, Mapping::identity())
     } else {
-        let (extent, offset) = Mapping::maximum_extent(&mappings[..], &[(w, h)]);
+        let (extent, offset) = Mapping::maximum_extent(mappings, &[(w, h)]);
         let (canvas_w, canvas_h) = extent
             .iter()
             .collect_tuple()
@@ -119,9 +148,8 @@ where
         ((canvas_h.ceil() as usize, canvas_w.ceil() as usize), offset)
     };
 
-    let mut canvas: Array3<f32> = Array3::zeros((canvas_h, canvas_w, (c + 1) as usize));
+    let mut canvas: Array3<f32> = Array3::zeros((canvas_h, canvas_w, (c + 1)));
     let mut valid: Array2<bool> = Array2::from_elem((canvas_h, canvas_w), false);
-
     let weights = distance_transform((w, h));
     let weights = weights.slice(s![.., .., NewAxis]);
     let merge = |dst: &mut [f32], src: &[f32]| {
@@ -142,8 +170,7 @@ where
             );
     }
 
-    let canvas =
-        canvas.slice(s![.., .., ..(c as usize)]).to_owned() / canvas.slice(s![.., .., -1..]);
+    let canvas = canvas.slice(s![.., .., ..c]).to_owned() / canvas.slice(s![.., .., -1..]);
     Ok(canvas)
 }
 
@@ -160,10 +187,8 @@ where
 {
     let frames: Vec<_> = frames
         .iter()
-        .map(|f| ref_image_to_array3(f).mapv(|v| f32::from(v)))
+        .map(|f| ref_image_to_array3(f).mapv(f32::from))
         .collect();
-    let merged = merge_arrays(mappings, &frames[..], size)?;
-    Ok(array3_to_image(
-        merged.mapv(|v| <P as Pixel>::Subpixel::clamp(v)),
-    ))
+    let merged = merge_arrays(mappings, &frames[..], size.map(|(w, h)| (h, w)))?;
+    Ok(array3_to_image(merged.mapv(<P as Pixel>::Subpixel::clamp)))
 }

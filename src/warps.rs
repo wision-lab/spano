@@ -392,8 +392,8 @@ impl Mapping {
         name = "maximum_extent",
         text_signature = "(maps: List[Self], sizes: List[(int, int)]) -> (np.ndarray, Self)"
     )]
-    pub fn maximum_extent_py<'py>(
-        py: Python<'py>,
+    pub fn maximum_extent_py(
+        py: Python<'_>,
         maps: Vec<Self>,
         sizes: Vec<(usize, usize)>,
     ) -> (&PyArray1<f32>, Self) {
@@ -454,10 +454,10 @@ impl Mapping {
     }
 
     /// Compose/accumulate all pairwise mappings together.
+    /// This adds in an identity warp to the start to have one warp per frame.
     #[staticmethod]
     #[pyo3(text_signature = "(mappings: List[Self]) -> List[Self]")]
     pub fn accumulate(mappings: Vec<Self>) -> Vec<Self> {
-        // Add in an identity warp to the start to have one warp per frame
         // TODO: maybe impl Copy to minimize the clones here...
         // TODO: Can we avoid the above collect and cumulatively compose in parallel?
         chain([Mapping::identity()], mappings)
@@ -609,7 +609,7 @@ impl Mapping {
     }
 
     /// Warp array using mapping into a new buffer of shape `out_size`.
-    /// This returns the new buffer along with a mask of which pixelks were warped.
+    /// This returns the new buffer along with a mask of which pixels were warped.
     #[pyo3(
         name = "warp_array",
         text_signature = "(self, data: np.ndarray, out_size: (int, int), \
@@ -625,7 +625,7 @@ impl Mapping {
         let (out, valid) = self.warp_array3(
             unsafe { &data.as_array() },
             out_size,
-            background.map(|v| Array1::from_vec(v)),
+            background.map(Array1::from_vec),
         );
         (out.to_pyarray(py), valid.to_pyarray(py))
     }

@@ -11,6 +11,15 @@ fn validate_normalized(p: &str) -> Result<f32, String> {
     }
 }
 
+fn non_zero(p: &str) -> Result<usize, String> {
+    let value = p.parse::<usize>().map_err(|_| "Invalid value")?;
+    if value != 0 {
+        Ok(value)
+    } else {
+        Err("Value must be non-zero".to_string())
+    }
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None, args_conflicts_with_subcommands = true)]
 /// Register two or more images and animate optimization process.
@@ -122,6 +131,11 @@ pub struct PanoArgs {
     /// Path of inpainting mask to use for filtering out dead/hot pixels
     #[arg(long, num_args(0..))]
     pub inpaint_path: Vec<String>,
+
+    /// Number of consecutive binary frames that will be merged together with identity transform and considered as
+    /// new granular unit. This greatly speeds up computations and memory requirements, at the cost of potential motion blur
+    #[arg(long, default_value_t = 8, value_parser=non_zero)]
+    pub granularity: usize,
 }
 
 #[derive(Subcommand, Debug, Clone)]

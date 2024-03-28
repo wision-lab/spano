@@ -92,8 +92,8 @@ criterion_group! {
             PProfProfiler::new(100, Output::Flamegraph(None))
         );
     targets =
-        // benchmark_warp_array3,
-        // benchmark_distance_transform,
+        benchmark_warp_array3,
+        benchmark_distance_transform,
         benchmark_iclk
 }
 

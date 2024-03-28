@@ -1,6 +1,5 @@
 import numpy as np
 
-
 def test_imports():
     from spano import Mapping
 
@@ -28,7 +27,7 @@ def test_warp_array():
         [0.47654548, -0.045553986, 4.847797],
         [-0.14852144, 0.6426208, 2.1364543],
         [-0.009891294, -0.0021317923, 0.88151735]
-    ], dtype=np.float32), kind="Projective").rescale(1/16)
+    ], dtype=np.float32), kind="Projective").inverse().rescale(1/16)
 
     warpd, valid = map.warp_array(src, (480, 640), [128, 0, 0])
     assert np.allclose(warpd, dst, atol=1)
