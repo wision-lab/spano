@@ -7,7 +7,7 @@ use ndarray::{array, Array3};
 #[cfg(target_os = "linux")]
 use pprof::criterion::{Output, PProfProfiler};
 use spano::{
-    blend::distance_transform,
+    blend::{distance_transform, merge_images},
     lk::iclk,
     warps::{Mapping, TransformationType},
 };
@@ -67,7 +67,7 @@ pub fn benchmark_iclk(c: &mut Criterion) {
         .into_rgb8();
     let img_dst = resize(&img_dst, 640 / 4, 480 / 4, CatmullRom);
 
-    c.bench_function("distance_iclk", |b| {
+    c.bench_function("iclk", |b| {
         b.iter(|| {
             // No patience, 25 iters, no early-stop.
             let (_map, _) = iclk(
@@ -84,6 +84,37 @@ pub fn benchmark_iclk(c: &mut Criterion) {
     });
 }
 
+pub fn benchmark_merge_images(c: &mut Criterion) {
+    let img_src = ImageReader::open("tests/source.png")
+        .unwrap()
+        .decode()
+        .unwrap()
+        .into_rgb8();
+    let img_dst = ImageReader::open("tests/warped.png")
+        .unwrap()
+        .decode()
+        .unwrap()
+        .into_rgb8();
+    let imgs = [img_src, img_dst];
+
+    let map = Mapping::from_matrix(
+        array![
+            [0.47654548, -0.045553986, 4.847797],
+            [-0.14852144, 0.6426208, 2.1364543],
+            [-0.009891294, -0.0021317923, 0.88151735]
+        ],
+        TransformationType::Projective,
+    )
+    .rescale(1.0 / 16.0);
+    let maps = [Mapping::identity(), map];
+
+    c.bench_function("merge_images", |b| {
+        b.iter(|| {
+            let _ = merge_images(&maps, &imgs, None).unwrap();
+        })
+    });
+}
+
 #[cfg(target_os = "linux")]
 criterion_group! {
     name = benches;
@@ -94,7 +125,8 @@ criterion_group! {
     targets =
         benchmark_warp_array3,
         benchmark_distance_transform,
-        benchmark_iclk
+        benchmark_iclk,
+        benchmark_merge_images
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -102,7 +134,8 @@ criterion_group! {
     benches,
     benchmark_warp_array3,
     benchmark_distance_transform,
-    benchmark_iclk
+    benchmark_iclk,
+    benchmark_merge_images
 }
 
 criterion_main!(benches);

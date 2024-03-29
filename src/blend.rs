@@ -12,26 +12,26 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use crate::warps::Mapping;
 
-/// Computes normalized and clipped distance transform (bwdist) for rectangle that fills image
-/// The MATLAB version of this uses a different algorithm, which is much faster but less general.
-/// Here, we simply cache the result instead.
-///
-/// References:
-///     Breu, Heinz, Joseph Gil, David Kirkpatrick, and Michael Werman, "Linear Time Euclidean
-///     Distance Transform Algorithms," IEEE Transactions on Pattern Analysis and Machine
-///     Intelligence, Vol. 17, No. 5, May 1995, pp. 529-533.
+/// Computes normalized and clipped distance transform (bwdist) for rectangle that fills image.
 #[cached(sync_writes = true)]
 pub fn distance_transform(size: (usize, usize)) -> Array2<f32> {
-    polygon_distance_transform(&Mapping::identity().corners(size), size)
+    let (w, h) = size;
+    let corners = [
+        (0.0, 0.0),
+        (w as f32, 0.0),
+        (w as f32, h as f32),
+        (0.0, h as f32),
+    ];
+    let dist = |q| {
+        corners
+            .iter()
+            .circular_tuple_windows()
+            .map(|(p1, p2)| distance_to_line(*p1, *p2, q))
+            .fold(f32::INFINITY, |a, b| a.min(b))
+    };
+    let max_dist = dist((w as f32 / 2.0, h as f32 / 2.0));
 
-    // let (w, h) = size;
-    // let corners = vec![(0.0, 0.0), (w as f32, 0.0), (w as f32, h as f32), (0.0, h as f32)];
-    // let dist = |q| corners.iter().circular_tuple_windows().map(|(p1, p2)| distance_to_line(*p1, *p2, q)).fold(f32::INFINITY, |a, b| a.min(b));
-    // let max_dist = dist((w as f32 / 2.0, h as f32 / 2.0));
-
-    // Array::from_shape_fn((h, w), |(i, j)| {
-    //     dist((j as f32, i as f32)) / max_dist
-    // })
+    Array::from_shape_fn((h, w), |(i, j)| dist((j as f32, i as f32)) / max_dist)
 }
 
 /// Find distance to line defined by two points
@@ -45,7 +45,17 @@ pub fn distance_to_line(p1: (f32, f32), p2: (f32, f32), query: (f32, f32)) -> f3
         / ((x2 - x1).powf(2.0) + (y2 - y1).powf(2.0)).sqrt()
 }
 
-/// Computes normalized and clipped distance transform (bwdist) for arbitray polygon
+/// Computes normalized and clipped distance transform (bwdist) for arbitray polygon.
+/// The MATLAB version of this uses a different algorithm, which is much faster but less general.
+/// Here, we simply cache the result instead.
+///
+/// To get the belnding mask for an image of a given `size` you can:
+///     polygon_distance_transform(&Mapping::identity().corners(size), size)
+///
+/// Reference of matlab algorithm:
+///     Breu, Heinz, Joseph Gil, David Kirkpatrick, and Michael Werman, "Linear Time Euclidean
+///     Distance Transform Algorithms," IEEE Transactions on Pattern Analysis and Machine
+///     Intelligence, Vol. 17, No. 5, May 1995, pp. 529-533.
 pub fn polygon_distance_transform(corners: &Array2<f32>, size: (usize, usize)) -> Array2<f32> {
     // Points is a Nx2 array of xy pairs
     let (width, height) = size;
@@ -153,8 +163,15 @@ where
     let weights = distance_transform((w, h));
     let weights = weights.slice(s![.., .., NewAxis]);
     let merge = |dst: &mut [f32], src: &[f32]| {
-        dst[0] += src[0] * src[1];
-        dst[1] += src[1];
+        // Redefine c because otherwise we capture outside scope and stuf breaks, not sure why.
+        let c = src.len() - 1;
+
+        // Multiply pixel value with blend coefficient and add it to running sum
+        for i in 0..c {
+            dst[i] += src[i] * src[c];
+        }
+        // Also keep track of total blending weight
+        dst[c] += src[c];
     };
 
     for (frame, map) in frames.iter().zip(mappings) {
