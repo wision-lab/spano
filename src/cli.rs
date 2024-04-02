@@ -83,12 +83,16 @@ pub struct LKArgs {
     pub max_lvls: u32,
 
     /// Minimum edge length of image at smallest level (only used when `--multi`)
-    #[arg(long, default_value_t = 25)]
+    #[arg(long, default_value_t = 16)]
     pub min_size: u32,
 
     /// Save parameters of optimization to file
     #[arg(long)]
     pub params_path: Option<String>,
+
+    /// Path of optional reference image mask (white areas are kept as valid, black is ignored)
+    #[arg(long)]
+    pub mask: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -141,8 +145,9 @@ pub struct PanoArgs {
 #[derive(Subcommand, Debug, Clone)]
 pub enum Commands {
     /// Perform Lucas-Kanade homography estimation between two images and animate optimization process.
+    /// This will match the second provided image (template) to the first image (reference).
     LK(LKArgs),
 
-    /// Estimate pairwise homographies and interpolate to all frames.
+    /// Estimate pairwise homographies and compose panorama by interpolating warp to all frames.
     Pano(PanoArgs),
 }

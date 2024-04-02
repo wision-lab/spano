@@ -7,7 +7,8 @@ use image::Pixel;
 use imageproc::definitions::{Clamp, Image};
 use itertools::{chain, multizip};
 use ndarray::{
-    array, concatenate, s, stack, Array, Array1, Array2, Array3, ArrayBase, Axis, Ix3, RawData,
+    array, concatenate, s, stack, Array, Array1, Array2, Array3, ArrayBase, Axis, Dimension, Ix3,
+    RawData,
 };
 use ndarray_interp::interp1d::{CubicSpline, Interp1DBuilder, Linear};
 use ndarray_linalg::solve::Inverse;
@@ -162,73 +163,85 @@ impl Mapping {
         let (_, _, c) = data.dim();
         let mut out = Array3::zeros((h, w, c));
         let mut valid = Array2::from_elem((h, w), false);
-        self.warp_array3_into(data, &mut out, &mut valid, None, background, None);
+
+        // Points is a Nx2 array of xy pairs
+        let points = Array::from_shape_fn((h * w, 2), |(i, j)| if j == 0 { i % w } else { i / w });
+
+        self.warp_array3_into(data, &mut out, &mut valid, &points, background, None);
         (out, valid)
     }
 
     /// Main workhorse for warping, use directly if output/points buffers can be
     /// reused or if something other than simple assignment is needed.
     ///
-    /// func:
-    ///     Option of a function that describes what to do with sampled pixel.
-    ///     It takes a mutable reference slice of the `out` buffer and a (possibly longer)
-    ///     ref slice of the new sampled pixel.    
+    /// Args:
+    ///     data:
+    ///         Data to warp from, this can be any Array3
+    ///     out:
+    ///         Pre-allocated buffer in which to put interpolated data. In the simplest case,
+    ///         it should be an Array3 as well, but since we we can interpolate at any arbitrary
+    ///         points, it need not be of dimensionality 3. In practice we operate on the flattened
+    ///         buffer anyways, so the only important value is the channel depth, which is assumed
+    ///         to be the same as the data channel depth.
+    ///     valid:
+    ///         Pre-allocated buffer which will hold which pixels have been warped. This tracks which
+    ///         pixels are out of bounds. Again, dimensionality is not important here.
+    ///     points: Nx2 array of xy pairs of points to sample (after warping them by self).
+    ///     background: If provided, interpolate betwen this color and data when sample is near border.
+    ///     func:
+    ///         Option of a function that describes what to do with sampled pixel.
+    ///         It takes a mutable reference slice of the `out` buffer and a (possibly longer)
+    ///         ref slice of the new sampled pixel.    
     #[allow(clippy::type_complexity)]
-    pub fn warp_array3_into<S, T>(
+    pub fn warp_array3_into<T, S1, S2, S3, D1, D2>(
         &self,
-        data: &ArrayBase<S, Ix3>,
-        out: &mut Array3<T>,
-        valid: &mut Array2<bool>,
-        points: Option<&Array2<usize>>,
+        data: &ArrayBase<S1, Ix3>,
+        out: &mut ArrayBase<S2, D1>,
+        valid: &mut ArrayBase<S3, D2>,
+        points: &Array2<usize>,
         background: Option<Array1<T>>,
         func: Option<fn(&mut [T], &[T])>,
     ) where
-        S: RawData<Elem = T> + ndarray::Data,
+        S1: RawData<Elem = T> + ndarray::Data,
+        S2: RawData<Elem = T> + ndarray::DataMut,
+        S3: RawData<Elem = bool> + ndarray::DataMut,
         T: num_traits::Zero + Clone + Copy + ValueInto<f32> + Send + Sync + Clamp<f32>,
+        D1: Dimension,
+        D2: Dimension,
         f32: From<T>,
     {
         const MAX_CHANNELS: usize = 8;
-        let (out_h, out_w, out_c) = out.dim();
         let (data_h, data_w, data_c) = data.dim();
 
-        if out_c > MAX_CHANNELS || data_c > MAX_CHANNELS {
+        if data_c > MAX_CHANNELS {
             panic!(
-                "Maximum supported channel depth is {MAX_CHANNELS}, data \
-                has {data_c} channels and output buffer has {out_c}."
+                "Maximum supported channel depth is {MAX_CHANNELS}, data has {data_c} channels."
             );
         }
-
-        // Points is a Nx2 array of xy pairs
-        let num_points = out_w * out_h;
-        let points_: Array2<usize>;
-        let points =
-            if let Some(pts) = points {
-                pts
-            } else {
-                points_ = Array::from_shape_fn((num_points, 2), |(i, j)| {
-                    if j == 0 {
-                        i % out_w
-                    } else {
-                        i / out_w
-                    }
-                });
-                &points_
-            };
 
         // If no reduction function is present, simply assign to slice
         let func = func.unwrap_or(|dst, src| dst.iter_mut().zip(src).for_each(|(d, s)| *d = *s));
 
         // If a background is specified, use that, otherwise use zeros
-        let (background, padding, has_bkg) = if let Some(bkg) = background {
-            (bkg, 1.0, true)
+        let (background, has_bkg) = if let Some(bkg) = background {
+            let bkg_c = bkg.len();
+            if bkg_c != data_c {
+                panic!("Background must have same number of channels as data, got {bkg_c} and {data_c} respectively.");
+            }
+            (bkg, true)
         } else {
-            (Array1::<T>::zeros(out_c), 0.0, false)
+            (Array1::<T>::zeros(data_c), false)
         };
 
         // Warp all points and determine indices of in-bound ones
         let warpd = self.warp_points(points);
-        let in_range_x = |x: f32| -padding <= x && x <= (data_w as f32) - 1.0 + padding;
-        let in_range_y = |y: f32| -padding <= y && y <= (data_h as f32) - 1.0 + padding;
+        let in_range_x =
+            |x: f32, padding: f32| -padding <= x && x <= (data_w as f32) - 1.0 + padding;
+        let in_range_y =
+            |y: f32, padding: f32| -padding <= y && y <= (data_h as f32) - 1.0 + padding;
+        let in_range = |x: f32, y: f32| {
+            in_range_x(x, has_bkg as i32 as f32) && in_range_y(y, has_bkg as i32 as f32)
+        };
 
         // Data sampler (enables smooth transition to bkg, i.e no jaggies)
         let bkg_slice = background
@@ -237,17 +250,20 @@ impl Mapping {
         let data_slice = data
             .as_slice()
             .expect("Data should be contiguous and HWC format");
+        let get_pix_unchecked = |x: f32, y: f32| {
+            let offset = ((y as usize) * data_w + (x as usize)) * data_c;
+            unsafe { data_slice.get_unchecked(offset..offset + data_c) }
+        };
         let get_pix_or_bkg = |x: f32, y: f32| {
             if x < 0f32 || x >= data_w as f32 || y < 0f32 || y >= data_h as f32 {
                 bkg_slice
             } else {
-                let offset = ((y as usize) * data_w + (x as usize)) * data_c;
-                &data_slice[offset..offset + data_c]
+                get_pix_unchecked(x, y)
             }
         };
 
         (
-            out.as_slice_mut().unwrap().par_chunks_mut(out_c),
+            out.as_slice_mut().unwrap().par_chunks_mut(data_c),
             valid.as_slice_mut().unwrap().par_iter_mut(),
             warpd.column(0).axis_iter(Axis(0)),
             warpd.column(1).axis_iter(Axis(0)),
@@ -257,7 +273,7 @@ impl Mapping {
                 let x = *x_.into_scalar();
                 let y = *y_.into_scalar();
 
-                if !in_range_x(x) || !in_range_y(y) {
+                if !in_range(x, y) {
                     if has_bkg {
                         func(out_slice, bkg_slice);
                     }
@@ -275,12 +291,25 @@ impl Mapping {
                 let bottom_weight = y - top;
                 let top_weight = 1.0 - bottom_weight;
 
-                let (tl, tr, bl, br) = (
-                    get_pix_or_bkg(left, top),
-                    get_pix_or_bkg(right, top),
-                    get_pix_or_bkg(left, bottom),
-                    get_pix_or_bkg(right, bottom),
-                );
+                let (tl, tr, bl, br) = if (0.0 <= left && right <= (data_w as f32) - 1.0)
+                    && (0.0 <= top && bottom <= (data_h as f32) - 1.0)
+                {
+                    // Strictly in range, no neighbooring pixels are bkg
+                    (
+                        get_pix_unchecked(left, top),
+                        get_pix_unchecked(right, top),
+                        get_pix_unchecked(left, bottom),
+                        get_pix_unchecked(right, bottom),
+                    )
+                } else {
+                    // Might be on border...
+                    (
+                        get_pix_or_bkg(left, top),
+                        get_pix_or_bkg(right, top),
+                        get_pix_or_bkg(left, bottom),
+                        get_pix_or_bkg(right, bottom),
+                    )
+                };
 
                 // Currently, the channel dimension cannot be known at compile time
                 // even if it's usually either P::CHANNEL_COUNT, 3 or 1. Letting the compiler know

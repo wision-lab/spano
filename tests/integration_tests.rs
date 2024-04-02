@@ -62,6 +62,7 @@ fn test_lk() {
         &img_src,
         &img_dst,
         Mapping::from_params(vec![0.0; 8]),
+        None,
         Some(250),
         (25, 25),
         5,

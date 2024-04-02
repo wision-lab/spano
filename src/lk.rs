@@ -13,7 +13,7 @@ use imageproc::{
 };
 use itertools::izip;
 use ndarray::{
-    array, par_azip, s, stack, Array, Array1, Array2, Array3, ArrayBase, ArrayView, Axis, NewAxis,
+    array, par_azip, s, stack, Array, Array1, Array2, ArrayBase, ArrayView, Axis, NewAxis,
 };
 use ndarray_linalg::solve::Inverse;
 use nshare::ToNdarray2;
@@ -44,6 +44,7 @@ pub fn iclk<P>(
     im1: &Image<P>,
     im2: &Image<P>,
     init_mapping: Mapping,
+    im1_mask: Option<&GrayImage>,
     max_iters: Option<i32>,
     stop_early: Option<f32>,
     patience: Option<usize>,
@@ -64,6 +65,7 @@ where
         &im2_gray,
         (dx, dy),
         init_mapping,
+        im1_mask,
         max_iters,
         stop_early,
         patience,
@@ -72,12 +74,21 @@ where
 }
 
 /// Main iclk routine, only works for grayscale images
+/// This returns the mapping that warps image 2 onto image 1's reference frame.
+/// The param history however, corresponds to the inverse mappings, i.e from 1 to 2.
+/// Note: No input validation is performed here, im1 and im2 can have different sizes but
+///     the im2 gradients need to have the same size as im2 and im1 mask should match im1.
+///
+/// See: https://www.ri.cmu.edu/pub_files/pub3/baker_simon_2002_3/baker_simon_2002_3.pdf
+///
+/// TODO: Is anything actually enforcing this to be grayscale/single-channel?
 #[allow(clippy::too_many_arguments)]
 pub fn iclk_grayscale<T>(
     im1_gray: &Image<Luma<T>>,
     im2_gray: &Image<Luma<T>>,
     im2_grad: (Array2<f32>, Array2<f32>),
     init_mapping: Mapping,
+    _im1_mask: Option<&GrayImage>,
     max_iters: Option<i32>,
     stop_early: Option<f32>,
     patience: Option<usize>,
@@ -90,8 +101,8 @@ where
     // Initialize values
     let mut params = init_mapping.inverse().get_params();
     let num_params = params.len();
-    let h = im2_gray.height().min(im1_gray.height());
-    let w = im2_gray.width().min(im1_gray.width());
+    let h = im2_gray.height();
+    let w = im2_gray.width();
     let points = Array::from_shape_fn(((w * h) as usize, 2), |(i, j)| {
         if j == 0 {
             i % w as usize
@@ -107,8 +118,8 @@ where
     let img2_pixels = image_to_array3(im2_gray.clone())
         .mapv(|v| f32::from(v))
         .into_shape((num_points, 1))?;
-    let mut warped_im1gray_pixels = Array3::<f32>::zeros((h as usize, w as usize, 1));
-    let mut valid = Array2::<bool>::from_elem((h as usize, w as usize), false);
+    let mut warped_im1gray_pixels = Array2::<f32>::zeros((num_points, 1));
+    let mut valid = Array1::<bool>::from_elem(num_points, false);
     let (dx, dy) = im2_grad;
 
     let mut params_history = vec![];
@@ -256,11 +267,11 @@ where
 
         // Create mapping from params and use it to sample points from img1
         let mapping = Mapping::from_params(params);
-        mapping.warp_array3_into::<_, f32>(
+        mapping.warp_array3_into::<f32, _, _, _, _, _>(
             &img1_array,
             &mut warped_im1gray_pixels,
             &mut valid,
-            Some(&points),
+            &points,
             Some(array![0.0]),
             None,
         );
@@ -321,6 +332,7 @@ pub fn hierarchical_iclk<P>(
     im1: &Image<P>,
     im2: &Image<P>,
     init_mapping: Mapping,
+    im1_mask: Option<&GrayImage>,
     max_iters: Option<i32>,
     min_dimensions: (u32, u32),
     max_levels: u32,
@@ -344,12 +356,20 @@ where
     let mut mapping = init_mapping;
     let mut all_params_history = HashMap::new();
 
-    for (i, (im1, im2)) in izip!(
+    let stack_mask = im1_mask.map_or(vec![None; num_lvls], |mask| {
+        img_pyramid(&mask, min_dimensions, max_levels)
+            .into_iter()
+            .map(Some)
+            .collect()
+    });
+
+    for (i, (im1, im2, mask)) in izip!(
         stack_im1[..num_lvls].iter().rev(),
-        stack_im2[..num_lvls].iter().rev()
+        stack_im2[..num_lvls].iter().rev(),
+        stack_mask[..num_lvls].iter().rev()
     )
     .enumerate()
-    {
+    {        
         // Compute mapping at lowest resolution first and double resolution it at each iteration
         let current_scale = (1 << (num_lvls - i - 1)) as f32;
 
@@ -362,6 +382,7 @@ where
             im2,
             gradients(im2),
             mapping,
+            mask.as_ref(),
             max_iters,
             stop_early,
             patience,
@@ -404,6 +425,7 @@ pub fn pairwise_iclk(
                 &window[1],
                 gradients(&window[1]),
                 init_mapping.clone(),
+                None,
                 Some(iterations),
                 Some(early_stop),
                 Some(patience),
@@ -420,6 +442,8 @@ pub fn pairwise_iclk(
     Ok(mappings)
 }
 
+/// Given an image, return an image pyramid with the largest size first and halving the size 
+/// every time until either the max-levels are reached or the minimum size is reached.
 pub fn img_pyramid<P>(im: &Image<P>, min_dimensions: (u32, u32), max_levels: u32) -> Vec<Image<P>>
 where
     P: Pixel + 'static,
@@ -429,7 +453,7 @@ where
     let mut stack = vec![im.clone()];
 
     for _ in 0..max_levels {
-        if w > min_width && h > min_height {
+        if w >= min_width * 2 && h >= min_height * 2 {
             (w, h) = (
                 (w as f32 / 2.0).round() as u32,
                 (h as f32 / 2.0).round() as u32,

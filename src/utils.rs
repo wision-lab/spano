@@ -58,7 +58,8 @@ pub fn animate_warp(
     }
     create_dir_all(img_dir)?;
 
-    let pbar = get_pbar(params_history.len(), message);
+    let num_frames = params_history.len() / step.unwrap_or(100);
+    let pbar = get_pbar(num_frames, message);
     params_history
         .into_par_iter()
         .step_by(step.unwrap_or(100))
@@ -72,7 +73,7 @@ pub fn animate_warp(
             let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
             out.save(&path)
                 .unwrap_or_else(|_| panic!("Could not save frame at {}!", &path.display()));
-            pbar.inc(step.unwrap_or(100) as u64);
+            pbar.inc(1);
         });
     pbar.finish_and_clear();
 
@@ -81,8 +82,8 @@ pub fn animate_warp(
         Path::new(&img_dir).join("frame%06d.png").to_str().unwrap(),
         out_path.unwrap_or("out.mp4"),
         fps.unwrap_or(25u64),
-        0,
-        None,
+        num_frames as u64,
+        Some("Making Video..."),
         None,
     );
     Ok(())
@@ -109,7 +110,10 @@ pub fn animate_hierarchical_warp(
     }
     create_dir_all(img_dir)?;
 
-    let num_frames: usize = all_params_history.iter().map(|x| x.1.len()).sum();
+    let num_frames: usize = all_params_history
+        .iter()
+        .map(|(_k, v)| v.len() / step.unwrap_or(100))
+        .sum();
     let pbar = get_pbar(num_frames, message);
 
     for (scale, params_history) in all_params_history.into_iter().sorted_by_key(|x| x.0).rev() {
@@ -127,7 +131,6 @@ pub fn animate_hierarchical_warp(
             FilterType::CatmullRom,
         );
 
-        // for params in params_history.iter().step_by(step.unwrap_or(10)) {
         offset += params_history
             .into_par_iter()
             .step_by(step.unwrap_or(100))
@@ -150,7 +153,7 @@ pub fn animate_hierarchical_warp(
                 let path = Path::new(&img_dir).join(format!("frame{:06}.png", i + offset));
                 out.save(&path)
                     .unwrap_or_else(|_| panic!("Could not save frame at {}!", &path.display()));
-                pbar.inc(step.unwrap_or(100) as u64)
+                pbar.inc(1)
             })
             .count();
     }
@@ -161,8 +164,8 @@ pub fn animate_hierarchical_warp(
         Path::new(&img_dir).join("frame%06d.png").to_str().unwrap(),
         out_path.unwrap_or("out.mp4"),
         fps.unwrap_or(25u64),
-        0,
-        None,
+        num_frames as u64,
+        Some("Making Video..."),
         None,
     );
     Ok(())
@@ -199,7 +202,7 @@ where
     let [canvas_w, canvas_h] = extent.to_vec()[..] else {
         unreachable!("Canvas should have width and height")
     };
-    let pbar = get_pbar(frames.len(), message);
+    let pbar = get_pbar(frames.len() / step.unwrap_or(100), message);
 
     (mappings, frames)
         .into_par_iter()
@@ -217,7 +220,7 @@ where
             let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
             img.save(&path)
                 .unwrap_or_else(|_| panic!("Could not save frame at {}!", &path.display()));
-            pbar.inc(step.unwrap_or(100) as u64);
+            pbar.inc(1);
         });
     pbar.finish_and_clear();
 

@@ -39,20 +39,45 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
         return Err(anyhow!("Exactly two inputs are required for --input."));
     };
 
-    // Load images and resize if needed
+    // Load images and mask if needed
     let img1 = ImageReader::open(img1_path)?.decode()?.into_rgb8();
     let img2 = ImageReader::open(img2_path)?.decode()?.into_rgb8();
-    let (w, h) = img1.dimensions();
-    let (w_, h_) = img2.dimensions();
+    let (w1, h1) = img1.dimensions();
+    let (w2, h2) = img2.dimensions();
 
-    if (h != h_) || (w != w_) {
-        return Err(anyhow!("Inputs need to be of same size."));
-    }
+    let mask = if let Some(path) = lk_args.mask {
+        let mask = ImageReader::open(path)?.decode()?.into_luma8();
+        let (mask_w, mask_h) = mask.dimensions();
 
-    let w = (w as f32 / lk_args.downscale) as u32;
-    let h = (h as f32 / lk_args.downscale) as u32;
-    let img1 = resize(&img1, w, h, FilterType::CatmullRom);
-    let img2 = resize(&img2, w, h, FilterType::CatmullRom);
+        if (h1 != mask_h) || (w1 != mask_w) {
+            return Err(anyhow!("Mask and reference image need to be of same size."));
+        }
+
+        let mask = resize(
+            &mask,
+            (w1 as f32 / lk_args.downscale as f32).round() as u32,
+            (h1 as f32 / lk_args.downscale as f32).round() as u32,
+            FilterType::CatmullRom,
+        );
+
+        Some(mask)
+    } else {
+        None
+    };
+
+    // Resize all to maximum dimensions, as defined by `downscale`.
+    let img1 = resize(
+        &img1,
+        (w1 as f32 / lk_args.downscale as f32).round() as u32,
+        (h1 as f32 / lk_args.downscale as f32).round() as u32,
+        FilterType::CatmullRom,
+    );
+    let img2 = resize(
+        &img2,
+        (w2 as f32 / lk_args.downscale as f32).round() as u32,
+        (h2 as f32 / lk_args.downscale as f32).round() as u32,
+        FilterType::CatmullRom,
+    );
 
     // Perform Matching
     let (mapping, params_history_str, num_steps) = if !lk_args.multi {
@@ -61,6 +86,7 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
             &img1,
             &img2,
             Mapping::from_params(vec![0.0; 8]),
+            mask.as_ref(),
             Some(lk_args.iterations),
             Some(lk_args.early_stop),
             Some(lk_args.patience),
@@ -76,8 +102,8 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
                 params_history,
                 &global_args.img_dir.unwrap(),
                 lk_args.downscale,
-                Some(global_args.viz_fps),  // FPS
-                Some(global_args.viz_step), // Step
+                Some(global_args.viz_fps),
+                Some(global_args.viz_step),
                 global_args.viz_output.as_deref(),
                 Some("Making Video..."),
             )?;
@@ -89,8 +115,9 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
             &img1,
             &img2,
             Mapping::from_params(vec![0.0; 8]),
+            mask.as_ref(),
             Some(lk_args.iterations),
-            (25, 25),
+            (lk_args.min_size, lk_args.min_size),
             lk_args.max_lvls,
             Some(lk_args.early_stop),
             Some(lk_args.patience),
@@ -106,8 +133,8 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
                 params_history,
                 lk_args.downscale,
                 &global_args.img_dir.unwrap(),
-                Some(global_args.viz_fps),  // FPS
-                Some(global_args.viz_step), // Step
+                Some(global_args.viz_fps),
+                Some(global_args.viz_step),
                 global_args.viz_output.as_deref(),
                 Some("Making Video..."),
             )?;
@@ -124,7 +151,14 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
         println!("Saving animation to {viz_path}...");
     }
     if let Some(out_path) = global_args.output {
-        let out = mapping.warp_image(&img2, (h as usize, w as usize), Some(Rgb([128, 0, 0])));
+        let out = mapping.warp_image(
+            &img2,
+            (
+                (h1 as f32 / lk_args.downscale as f32).round() as usize,
+                (w1 as f32 / lk_args.downscale as f32).round() as usize,
+            ),
+            Some(Rgb([128, 0, 0])),
+        );
         out.save(&out_path)?;
         println!("Saving warped image to {out_path}...");
     }

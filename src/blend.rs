@@ -174,14 +174,17 @@ where
         dst[c] += src[c];
     };
 
+    // Points is a Nx2 array of xy pairs
+    let points = Array::from_shape_fn((h * w, 2), |(i, j)| if j == 0 { i % w } else { i / w });
+
     for (frame, map) in frames.iter().zip(mappings) {
         let frame = concatenate(Axis(2), &[frame.view(), weights.view()])?;
         map.transform(None, Some(offset.clone()))
-            .warp_array3_into::<_, f32>(
+            .warp_array3_into::<f32, _, _, _, _, _>(
                 &frame.as_standard_layout(),
                 &mut canvas,
                 &mut valid,
-                None,
+                &points,
                 None,
                 Some(merge),
             );

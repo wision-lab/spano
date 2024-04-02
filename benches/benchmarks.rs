@@ -74,6 +74,7 @@ pub fn benchmark_iclk(c: &mut Criterion) {
                 &img_src,
                 &img_dst,
                 Mapping::from_params(vec![0.0; 8]),
+                None,
                 Some(25),
                 Some(1e-12),
                 Some(1),
