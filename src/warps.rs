@@ -179,7 +179,7 @@ impl Mapping {
     ///         Data to warp from, this can be any Array3
     ///     out:
     ///         Pre-allocated buffer in which to put interpolated data. In the simplest case,
-    ///         it should be an Array3 as well, but since we we can interpolate at any arbitrary
+    ///         it should be an Array3 as well, but since we can interpolate at any arbitrary
     ///         points, it need not be of dimensionality 3. In practice we operate on the flattened
     ///         buffer anyways, so the only important value is the channel depth, which is assumed
     ///         to be the same as the data channel depth.

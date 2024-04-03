@@ -55,8 +55,8 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
 
         let mask = resize(
             &mask,
-            (w1 as f32 / lk_args.downscale as f32).round() as u32,
-            (h1 as f32 / lk_args.downscale as f32).round() as u32,
+            (w1 as f32 / lk_args.downscale).round() as u32,
+            (h1 as f32 / lk_args.downscale).round() as u32,
             FilterType::CatmullRom,
         );
 
@@ -68,14 +68,14 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
     // Resize all to maximum dimensions, as defined by `downscale`.
     let img1 = resize(
         &img1,
-        (w1 as f32 / lk_args.downscale as f32).round() as u32,
-        (h1 as f32 / lk_args.downscale as f32).round() as u32,
+        (w1 as f32 / lk_args.downscale).round() as u32,
+        (h1 as f32 / lk_args.downscale).round() as u32,
         FilterType::CatmullRom,
     );
     let img2 = resize(
         &img2,
-        (w2 as f32 / lk_args.downscale as f32).round() as u32,
-        (h2 as f32 / lk_args.downscale as f32).round() as u32,
+        (w2 as f32 / lk_args.downscale).round() as u32,
+        (h2 as f32 / lk_args.downscale).round() as u32,
         FilterType::CatmullRom,
     );
 
@@ -154,8 +154,8 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
         let out = mapping.warp_image(
             &img2,
             (
-                (h1 as f32 / lk_args.downscale as f32).round() as usize,
-                (w1 as f32 / lk_args.downscale as f32).round() as usize,
+                (h1 as f32 / lk_args.downscale).round() as usize,
+                (w1 as f32 / lk_args.downscale).round() as usize,
             ),
             Some(Rgb([128, 0, 0])),
         );

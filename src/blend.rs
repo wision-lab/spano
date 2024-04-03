@@ -175,7 +175,13 @@ where
     };
 
     // Points is a Nx2 array of xy pairs
-    let points = Array::from_shape_fn((h * w, 2), |(i, j)| if j == 0 { i % w } else { i / w });
+    let points = Array::from_shape_fn((canvas_h * canvas_w, 2), |(i, j)| {
+        if j == 0 {
+            i % canvas_w
+        } else {
+            i / canvas_w
+        }
+    });
 
     for (frame, map) in frames.iter().zip(mappings) {
         let frame = concatenate(Axis(2), &[frame.view(), weights.view()])?;

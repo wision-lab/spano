@@ -111,8 +111,8 @@ pub fn animate_hierarchical_warp(
     create_dir_all(img_dir)?;
 
     let num_frames: usize = all_params_history
-        .iter()
-        .map(|(_k, v)| v.len() / step.unwrap_or(100))
+        .values()
+        .map(|v| v.len() / step.unwrap_or(100))
         .sum();
     let pbar = get_pbar(num_frames, message);
 

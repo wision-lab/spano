@@ -40,6 +40,7 @@ where
 
 /// Estimate the warp that maps `img2` to `img1` using the Inverse Compositional Lucas-Kanade algorithm.
 /// In other words, img2 is the template and img1 is the static image.
+#[allow(clippy::too_many_arguments)]
 pub fn iclk<P>(
     im1: &Image<P>,
     im2: &Image<P>,
@@ -357,7 +358,7 @@ where
     let mut all_params_history = HashMap::new();
 
     let stack_mask = im1_mask.map_or(vec![None; num_lvls], |mask| {
-        img_pyramid(&mask, min_dimensions, max_levels)
+        img_pyramid(mask, min_dimensions, max_levels)
             .into_iter()
             .map(Some)
             .collect()
@@ -369,7 +370,7 @@ where
         stack_mask[..num_lvls].iter().rev()
     )
     .enumerate()
-    {        
+    {
         // Compute mapping at lowest resolution first and double resolution it at each iteration
         let current_scale = (1 << (num_lvls - i - 1)) as f32;
 
@@ -442,7 +443,7 @@ pub fn pairwise_iclk(
     Ok(mappings)
 }
 
-/// Given an image, return an image pyramid with the largest size first and halving the size 
+/// Given an image, return an image pyramid with the largest size first and halving the size
 /// every time until either the max-levels are reached or the minimum size is reached.
 pub fn img_pyramid<P>(im: &Image<P>, min_dimensions: (u32, u32), max_levels: u32) -> Vec<Image<P>>
 where
