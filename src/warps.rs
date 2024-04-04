@@ -20,18 +20,19 @@ use rayon::{
     iter::{IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator},
     slice::ParallelSliceMut,
 };
+use strum::{EnumCount, VariantArray};
 use strum_macros::{Display, EnumString};
 
 // Note: We cannot use #[pyclass] her as we're stuck in pyo3@0.15.2 to support py36, so
 // we use `EnumString` to convert strings into their enum values.
 // TODO: Use pyclass and remove strum dependency when we drop py36 support.
-#[derive(Copy, Clone, Debug, EnumString, Display, PartialEq)]
+#[derive(Copy, Clone, Debug, EnumString, Display, PartialEq, EnumCount, VariantArray)]
 pub enum TransformationType {
+    Unknown,
     Identity,
     Translational,
     Affine,
     Projective,
-    Unknown,
 }
 
 impl TransformationType {
@@ -180,7 +181,7 @@ impl Mapping {
     ///     out:
     ///         Pre-allocated buffer in which to put interpolated data. In the simplest case,
     ///         it should be an Array3 as well, but since we can interpolate at any arbitrary
-    ///         points, it need not be of dimensionality 3. In practice we operate on the flattened
+    ///         point, it need not be of dimensionality 3. In practice we operate on the flattened
     ///         buffer anyways, so the only important value is the channel depth, which is assumed
     ///         to be the same as the data channel depth.
     ///     valid:
@@ -564,6 +565,36 @@ impl Mapping {
         Self {
             mat: self.mat.inv().expect("Cannot invert mapping"),
             kind: self.kind,
+        }
+    }
+
+    /// Upgrade Type of warp if it's not unknown, i.e: Identity -> Translational -> Affine -> Projective
+    #[pyo3(text_signature = "(self) -> Self")]
+    pub fn upgrade(&self) -> Self {
+        // Warning: This relies on the UNKNOWN type being first in the enum!
+        if self.kind == TransformationType::Unknown {
+            return self.clone();
+        }
+        let idx = TransformationType::VARIANTS.iter().position(|k| *k == self.kind).unwrap();
+
+        Self {
+            mat: self.mat.clone(),
+            kind: TransformationType::VARIANTS[(idx+1).min(TransformationType::COUNT -1)] 
+        }
+    }
+
+    /// Downgrade Type of warp if it's not unknown, i.e: Projective -> Affine -> Translational -> Identity
+    #[pyo3(text_signature = "(self) -> Self")]
+    pub fn downgrade(&self) -> Self {
+        // Warning: This relies on the UNKNOWN type being first in the enum!
+        if self.kind == TransformationType::Unknown {
+            return self.clone();
+        }
+        let idx = TransformationType::VARIANTS.iter().position(|k| *k == self.kind).unwrap();
+
+        Self {
+            mat: self.mat.clone(),
+            kind: TransformationType::VARIANTS[(idx-1).max(1)] 
         }
     }
 

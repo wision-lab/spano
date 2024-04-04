@@ -23,7 +23,6 @@ itertools = "0.12.1"
 ndarray = { version = "0.15.6", features = ["approx-0_5", "rayon", "matrixmultiply-threading"] }
 ndarray-linalg = { version = "0.16.0", features = ["intel-mkl-static"]}
 photoncube2video = { path = "../photoncube2video" }
-nshare = "0.9.0"
 num-traits = "0.2.18"
 rayon = "1.10.0"
 tempfile = "3.10.1"

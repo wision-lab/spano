@@ -2307,7 +2307,6 @@ dependencies = [
  "ndarray",
  "ndarray-interp",
  "ndarray-linalg",
- "nshare",
  "num-traits",
  "numpy",
  "photoncube2video",

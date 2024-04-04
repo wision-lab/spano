@@ -16,8 +16,7 @@ use ndarray::{
     array, par_azip, s, stack, Array, Array1, Array2, ArrayBase, ArrayView, Axis, NewAxis,
 };
 use ndarray_linalg::solve::Inverse;
-use nshare::ToNdarray2;
-use photoncube2video::transforms::image_to_array3;
+use photoncube2video::transforms::{image_to_array3, grayimage_to_array2};
 use rayon::prelude::*;
 
 use crate::{
@@ -33,8 +32,8 @@ where
     f32: ValueFrom<T>,
 {
     (
-        filter3x3(img, &HORIZONTAL_SCHARR.map(|v| v as f32)).into_ndarray2(),
-        filter3x3(img, &VERTICAL_SCHARR.map(|v| v as f32)).into_ndarray2(),
+        grayimage_to_array2(filter3x3(img, &HORIZONTAL_SCHARR.map(|v| v as f32))),
+        grayimage_to_array2(filter3x3(img, &VERTICAL_SCHARR.map(|v| v as f32))),
     )
 }
 
