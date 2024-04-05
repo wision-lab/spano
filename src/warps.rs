@@ -577,10 +577,10 @@ impl Mapping {
         }
         let idx = TransformationType::VARIANTS.iter().position(|k| *k == self.kind).unwrap();
 
-        Self {
-            mat: self.mat.clone(),
-            kind: TransformationType::VARIANTS[(idx+1).min(TransformationType::COUNT -1)] 
-        }
+        Self::from_matrix(
+            self.mat.clone(),
+            TransformationType::VARIANTS[(idx+1).min(TransformationType::COUNT -1)] 
+        )
     }
 
     /// Downgrade Type of warp if it's not unknown, i.e: Projective -> Affine -> Translational -> Identity
@@ -592,10 +592,10 @@ impl Mapping {
         }
         let idx = TransformationType::VARIANTS.iter().position(|k| *k == self.kind).unwrap();
 
-        Self {
-            mat: self.mat.clone(),
-            kind: TransformationType::VARIANTS[(idx-1).max(1)] 
-        }
+        Self::from_matrix(
+            self.mat.clone(),
+            TransformationType::VARIANTS[(idx-1).max(1)] 
+        )
     }
 
     /// Compose with other mappings from left or right. Useful for scaling, offsetting, etc...
@@ -730,7 +730,7 @@ impl Mapping {
 #[cfg(test)]
 mod test_warps {
     use approx::assert_relative_eq;
-    use ndarray::array;
+    use ndarray::{array, Array2};
 
     use crate::warps::{Mapping, TransformationType};
 
@@ -747,5 +747,33 @@ mod test_warps {
         let point = array![[0, 0]];
         let warpd = map.warp_points(&point);
         assert_relative_eq!(warpd, array![[3.56534624, 0.61332092]]);
+    }
+
+    #[test]
+    fn test_updowngrade() {
+        let map = Mapping::from_matrix(Array2::eye(3), TransformationType::Unknown);
+        assert!(map.upgrade().kind == TransformationType::Unknown);
+        assert!(map.downgrade().kind == TransformationType::Unknown);
+
+        let mut map = Mapping::identity();
+        assert!(map.kind == TransformationType::Identity);
+
+        map = map.upgrade();
+        assert!(map.kind == TransformationType::Translational);
+        map = map.upgrade();
+        assert!(map.kind == TransformationType::Affine);
+        map = map.upgrade();
+        assert!(map.kind == TransformationType::Projective);
+        map = map.upgrade();
+        assert!(map.kind == TransformationType::Projective);
+
+        map = map.downgrade();
+        assert!(map.kind == TransformationType::Affine);
+        map = map.downgrade();
+        assert!(map.kind == TransformationType::Translational);
+        map = map.downgrade();
+        assert!(map.kind == TransformationType::Identity);
+        map = map.downgrade();
+        assert!(map.kind == TransformationType::Identity);
     }
 }
