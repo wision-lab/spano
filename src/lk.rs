@@ -12,11 +12,9 @@ use imageproc::{
     gradients::{HORIZONTAL_SCHARR, VERTICAL_SCHARR},
 };
 use itertools::izip;
-use ndarray::{
-    array, par_azip, s, stack, Array, Array1, Array2, ArrayBase, ArrayView, Axis, NewAxis,
-};
+use ndarray::{concatenate, par_azip, s, stack, Array, Array1, Array2, ArrayBase, Axis, NewAxis};
 use ndarray_linalg::solve::Inverse;
-use photoncube2video::transforms::{image_to_array3, grayimage_to_array2};
+use photoncube2video::transforms::{grayimage_to_array2, ref_image_to_array3};
 use rayon::prelude::*;
 
 use crate::{
@@ -44,7 +42,7 @@ pub fn iclk<P>(
     im1: &Image<P>,
     im2: &Image<P>,
     init_mapping: Mapping,
-    im1_mask: Option<&GrayImage>,
+    im1_weights: Option<&GrayImage>,
     max_iters: Option<i32>,
     stop_early: Option<f32>,
     patience: Option<usize>,
@@ -65,7 +63,7 @@ where
         &im2_gray,
         (dx, dy),
         init_mapping,
-        im1_mask,
+        im1_weights,
         max_iters,
         stop_early,
         patience,
@@ -76,8 +74,13 @@ where
 /// Main iclk routine, only works for grayscale images
 /// This returns the mapping that warps image 2 onto image 1's reference frame.
 /// The param history however, corresponds to the inverse mappings, i.e from 1 to 2.
+///
+/// Weights can be specified for image 1. They are concatenated to the reference image and
+/// warped together. The warped weights then affect that pixel's loss and is effectively
+/// discarded from the optimization step if it's zero.
+///
 /// Note: No input validation is performed here, im1 and im2 can have different sizes but
-///     the im2 gradients need to have the same size as im2 and im1 mask should match im1.
+///     the im2 gradients need to have the same size as im2 and im1 weights should match im1.
 ///
 /// See: https://www.ri.cmu.edu/pub_files/pub3/baker_simon_2002_3/baker_simon_2002_3.pdf
 ///
@@ -88,7 +91,7 @@ pub fn iclk_grayscale<T>(
     im2_gray: &Image<Luma<T>>,
     im2_grad: (Array2<f32>, Array2<f32>),
     init_mapping: Mapping,
-    _im1_mask: Option<&GrayImage>,
+    im1_weights: Option<&GrayImage>,
     max_iters: Option<i32>,
     stop_early: Option<f32>,
     patience: Option<usize>,
@@ -103,6 +106,7 @@ where
     let num_params = params.len();
     let h = im2_gray.height();
     let w = im2_gray.width();
+    let c = 1;
     let points = Array::from_shape_fn(((w * h) as usize, 2), |(i, j)| {
         if j == 0 {
             i % w as usize
@@ -114,19 +118,30 @@ where
     let ys = points.column(1).mapv(|v| v as f32);
     let num_points = (w * h) as usize;
 
-    let img1_array = image_to_array3(im1_gray.clone()).mapv(|v| f32::from(v));
-    let img2_pixels = image_to_array3(im2_gray.clone())
+    let (img1_array, has_weights) = if let Some(weights) = im1_weights {
+        let mut img1_array = ref_image_to_array3(im1_gray).mapv(|v| f32::from(v));
+        img1_array = concatenate(
+            Axis(2),
+            &[
+                img1_array.view(),
+                ref_image_to_array3::<Luma<u8>>(weights)
+                    .mapv(|v| v as f32 / 255.0)
+                    .view(),
+            ],
+        )?;
+        (img1_array.as_standard_layout().to_owned(), true)
+    } else {
+        (ref_image_to_array3(im1_gray).mapv(|v| f32::from(v)), false)
+    };
+    let mut warped_im1gray_pixels = Array2::<f32>::zeros((num_points, img1_array.len_of(Axis(2))));
+
+    let img2_pixels = ref_image_to_array3(im2_gray)
         .mapv(|v| f32::from(v))
         .into_shape((num_points, 1))?;
-    let mut warped_im1gray_pixels = Array2::<f32>::zeros((num_points, 1));
     let mut valid = Array1::<bool>::from_elem(num_points, false);
-    let (dx, dy) = im2_grad;
-
-    let mut params_history = vec![];
-    params_history.push(params.clone());
-    let mut dps: VecDeque<Array2<f32>> = VecDeque::with_capacity(patience.unwrap_or(10));
 
     // These can be cached, so we init them before the main loop
+    let (dx, dy) = im2_grad;
     let (steepest_descent_ic_t, hessian_inv) = match init_mapping.kind {
         TransformationType::Translational => {
             let steepest_descent_ic_t = stack![
@@ -259,43 +274,46 @@ where
             ))
         }
     };
+
+    // Tracking variables
     let pbar = get_pbar(max_iters.unwrap_or(250) as usize, message);
+    let mut params_history = vec![];
+    params_history.push(params.clone());
+    let mut dps: VecDeque<Array2<f32>> = VecDeque::with_capacity(patience.unwrap_or(10));
 
     // Main optimization loop
     for i in 0..max_iters.unwrap_or(250) {
         pbar.set_position(i as u64);
 
         // Create mapping from params and use it to sample points from img1
+        // TODO: Warp with background or without?
         let mapping = Mapping::from_params(params);
         mapping.warp_array3_into::<f32, _, _, _, _, _>(
             &img1_array,
             &mut warped_im1gray_pixels,
             &mut valid,
             &points,
-            Some(array![0.0]),
+            None,
             None,
         );
-
-        let warped_im1gray_pixels_view =
-            ArrayView::from_shape((num_points, 1), warped_im1gray_pixels.as_slice().unwrap())
-                .unwrap();
-
-        let valid_view = ArrayView::from_shape(num_points, valid.as_slice().unwrap()).unwrap();
 
         // Calculate parameter update dp
         let dp: Array2<f32> = hessian_inv.dot(
             &(
                 steepest_descent_ic_t.axis_iter(Axis(0)),
-                warped_im1gray_pixels_view.axis_iter(Axis(0)),
+                warped_im1gray_pixels.axis_iter(Axis(0)),
                 img2_pixels.axis_iter(Axis(0)),
-                valid_view.axis_iter(Axis(0)),
+                valid.as_slice().unwrap().par_iter(),
             )
                 // Zip together all three iterators and valid flag
                 .into_par_iter()
                 // Drop them if the warped value from is out-of-bounds
-                .filter(|(_, _, _, is_valid)| is_valid.iter().all(|i| *i))
+                .filter(|(_, _, _, &is_valid)| is_valid)
                 // Calculate parameter update according to formula
-                .map(|(sd, p1, p2, _)| sd.to_owned() * (p1.to_owned() - p2.to_owned()).sum())
+                .map(|(sd, p1, p2, _)| {
+                    let weight = if has_weights { p1[c] } else { 1.0 };
+                    sd.to_owned() * (p1.slice(s![..c]).to_owned() - p2.to_owned()).sum() * weight
+                })
                 // Sum them together, here we use reduce with a base value of zero
                 .reduce(|| Array2::<f32>::zeros((num_params, 1)), |a, b| a + b),
         );
@@ -332,7 +350,7 @@ pub fn hierarchical_iclk<P>(
     im1: &Image<P>,
     im2: &Image<P>,
     init_mapping: Mapping,
-    im1_mask: Option<&GrayImage>,
+    im1_weights: Option<&GrayImage>,
     max_iters: Option<i32>,
     min_dimensions: (u32, u32),
     max_levels: u32,
@@ -356,17 +374,17 @@ where
     let mut mapping = init_mapping;
     let mut all_params_history = HashMap::new();
 
-    let stack_mask = im1_mask.map_or(vec![None; num_lvls], |mask| {
-        img_pyramid(mask, min_dimensions, max_levels)
+    let stack_weights = im1_weights.map_or(vec![None; num_lvls], |weights| {
+        img_pyramid(weights, min_dimensions, max_levels)
             .into_iter()
             .map(Some)
             .collect()
     });
 
-    for (i, (im1, im2, mask)) in izip!(
+    for (i, (im1, im2, weights)) in izip!(
         stack_im1[..num_lvls].iter().rev(),
         stack_im2[..num_lvls].iter().rev(),
-        stack_mask[..num_lvls].iter().rev()
+        stack_weights[..num_lvls].iter().rev()
     )
     .enumerate()
     {
@@ -382,7 +400,7 @@ where
             im2,
             gradients(im2),
             mapping,
-            mask.as_ref(),
+            weights.as_ref(),
             max_iters,
             stop_early,
             patience,

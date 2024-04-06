@@ -45,22 +45,22 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
     let (w1, h1) = img1.dimensions();
     let (w2, h2) = img2.dimensions();
 
-    let mask = if let Some(path) = lk_args.mask {
-        let mask = ImageReader::open(path)?.decode()?.into_luma8();
-        let (mask_w, mask_h) = mask.dimensions();
+    let weights = if let Some(path) = lk_args.weights {
+        let weights = ImageReader::open(path)?.decode()?.into_luma8();
+        let (weights_w, weights_h) = weights.dimensions();
 
-        if (h1 != mask_h) || (w1 != mask_w) {
+        if (h1 != weights_h) || (w1 != weights_w) {
             return Err(anyhow!("Mask and reference image need to be of same size."));
         }
 
-        let mask = resize(
-            &mask,
+        let weights = resize(
+            &weights,
             (w1 as f32 / lk_args.downscale).round() as u32,
             (h1 as f32 / lk_args.downscale).round() as u32,
             FilterType::CatmullRom,
         );
 
-        Some(mask)
+        Some(weights)
     } else {
         None
     };
@@ -86,28 +86,14 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
             &img1,
             &img2,
             Mapping::from_params(vec![0.0; 8]),
-            mask.as_ref(),
+            weights.as_ref(),
             Some(lk_args.iterations),
             Some(lk_args.early_stop),
             Some(lk_args.patience),
             Some("Matching..."),
         )?;
         let num_steps = params_history.len();
-
-        // Show Animation of optimization
         let params_history_str = serde_json::to_string_pretty(&params_history)?;
-        if global_args.viz_output.is_some() {
-            animate_warp(
-                img2_path,
-                params_history,
-                &global_args.img_dir.unwrap(),
-                lk_args.downscale,
-                Some(global_args.viz_fps),
-                Some(global_args.viz_step),
-                global_args.viz_output.as_deref(),
-                Some("Making Video..."),
-            )?;
-        }
         (mapping, params_history_str, num_steps - 1)
     } else {
         // Register images
@@ -115,7 +101,7 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
             &img1,
             &img2,
             Mapping::from_params(vec![0.0; 8]),
-            mask.as_ref(),
+            weights.as_ref(),
             Some(lk_args.iterations),
             (lk_args.min_size, lk_args.min_size),
             lk_args.max_lvls,
@@ -124,21 +110,7 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
             true,
         )?;
         let num_steps = params_history.values().map(|v| v.len()).sum();
-
-        // Show Animation of optimization
         let params_history_str = serde_json::to_string_pretty(&params_history)?;
-        if global_args.viz_output.is_some() {
-            animate_hierarchical_warp(
-                img2_path,
-                params_history,
-                lk_args.downscale,
-                &global_args.img_dir.unwrap(),
-                Some(global_args.viz_fps),
-                Some(global_args.viz_step),
-                global_args.viz_output.as_deref(),
-                Some("Making Video..."),
-            )?;
-        }
         (mapping, params_history_str, num_steps)
     };
 
@@ -147,9 +119,6 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
         num_steps - 1,
         &mapping.rescale(1.0 / lk_args.downscale).mat
     );
-    if let Some(viz_path) = global_args.viz_output {
-        println!("Saving animation to {viz_path}...");
-    }
     if let Some(out_path) = global_args.output {
         let out = mapping.warp_image(
             &img2,
@@ -161,6 +130,35 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
         );
         out.save(&out_path)?;
         println!("Saving warped image to {out_path}...");
+    }
+    if let Some(viz_path) = global_args.viz_output {
+        println!("Saving animation to {viz_path}...");
+
+        if !lk_args.multi {
+            let params_history = serde_json::from_str(&params_history_str)?;
+            animate_warp(
+                img2_path,
+                params_history,
+                &global_args.img_dir.unwrap(),
+                lk_args.downscale,
+                Some(global_args.viz_fps),
+                Some(global_args.viz_step),
+                Some(&viz_path),
+                Some("Making Video..."),
+            )?;
+        } else {
+            let params_history = serde_json::from_str(&params_history_str)?;
+            animate_hierarchical_warp(
+                img2_path,
+                params_history,
+                lk_args.downscale,
+                &global_args.img_dir.unwrap(),
+                Some(global_args.viz_fps),
+                Some(global_args.viz_step),
+                Some(&viz_path),
+                Some("Making Video..."),
+            )?;
+        }
     }
     if let Some(params_path) = lk_args.params_path {
         write(params_path, params_history_str).expect("Unable to write params file.");

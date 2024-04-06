@@ -575,11 +575,14 @@ impl Mapping {
         if self.kind == TransformationType::Unknown {
             return self.clone();
         }
-        let idx = TransformationType::VARIANTS.iter().position(|k| *k == self.kind).unwrap();
+        let idx = TransformationType::VARIANTS
+            .iter()
+            .position(|k| *k == self.kind)
+            .unwrap();
 
         Self::from_matrix(
             self.mat.clone(),
-            TransformationType::VARIANTS[(idx+1).min(TransformationType::COUNT -1)] 
+            TransformationType::VARIANTS[(idx + 1).min(TransformationType::COUNT - 1)],
         )
     }
 
@@ -590,11 +593,14 @@ impl Mapping {
         if self.kind == TransformationType::Unknown {
             return self.clone();
         }
-        let idx = TransformationType::VARIANTS.iter().position(|k| *k == self.kind).unwrap();
+        let idx = TransformationType::VARIANTS
+            .iter()
+            .position(|k| *k == self.kind)
+            .unwrap();
 
         Self::from_matrix(
             self.mat.clone(),
-            TransformationType::VARIANTS[(idx-1).max(1)] 
+            TransformationType::VARIANTS[(idx - 1).max(1)],
         )
     }
 

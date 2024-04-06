@@ -90,9 +90,9 @@ pub struct LKArgs {
     #[arg(long)]
     pub params_path: Option<String>,
 
-    /// Path of optional reference image mask (white areas are kept as valid, black is ignored)
+    /// Path of optional reference image weights (can be used as mask too, white areas are kept as valid, black is ignored)
     #[arg(long)]
-    pub mask: Option<String>,
+    pub weights: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
