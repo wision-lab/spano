@@ -308,11 +308,14 @@ where
                 // Zip together all three iterators and valid flag
                 .into_par_iter()
                 // Drop them if the warped value from is out-of-bounds
-                .filter(|(_, _, _, &is_valid)| is_valid)
                 // Calculate parameter update according to formula
-                .map(|(sd, p1, p2, _)| {
-                    let weight = if has_weights { p1[c] } else { 1.0 };
-                    sd.to_owned() * (p1.slice(s![..c]).to_owned() - p2.to_owned()).sum() * weight
+                .filter_map(|(sd, p1, p2, &is_valid)| {
+                    if is_valid {
+                        let weight = if has_weights { p1[c] } else { 1.0 };
+                        Some(sd.to_owned() * (p1.slice(s![..c]).to_owned() - p2.to_owned()).sum() * weight)
+                    } else {
+                        None
+                    } 
                 })
                 // Sum them together, here we use reduce with a base value of zero
                 .reduce(|| Array2::<f32>::zeros((num_params, 1)), |a, b| a + b),

@@ -265,7 +265,11 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
                     let mut frame = group
                         .axis_iter(Axis(0))
                         .map(|bitplane| {
-                            unpack_single::<f32>(&bitplane, 1).unwrap()
+                            if pano_args.not_bitpacked {
+                                bitplane.mapv(|v| v as f32)
+                            } else {
+                                unpack_single::<f32>(&bitplane, 1).unwrap()
+                            }
                         })
                         // Sum frames together (.sum not implemented for this type)
                         .reduce(|acc, e| acc + e)

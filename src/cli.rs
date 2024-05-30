@@ -140,6 +140,10 @@ pub struct PanoArgs {
     /// new granular unit. This greatly speeds up computations and memory requirements, at the cost of potential motion blur
     #[arg(long, default_value_t = 8, value_parser=non_zero)]
     pub granularity: usize,
+
+    /// Assumes the data is bitpacked along the width dimension, to disable unpacking, pass this flag.
+    #[arg(long, action)]
+    pub not_bitpacked: bool,
 }
 
 #[derive(Subcommand, Debug, Clone)]
