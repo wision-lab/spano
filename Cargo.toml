@@ -22,7 +22,6 @@ indicatif = "0.17.8"
 itertools = "0.12.1"
 ndarray = { version = "0.15.6", features = ["approx-0_5", "rayon", "matrixmultiply-threading"] }
 ndarray-linalg = { version = "0.16.0", features = ["intel-mkl-static"]}
-photoncube2video = { path = "../photoncube2video" }
 num-traits = "0.2.19"
 rayon = "1.10.0"
 tempfile = "3.10.1"
@@ -30,6 +29,10 @@ approx = "0.5.1"
 ndarray-interp = "0.4.1"
 serde_json = "1.0.117"
 heapless = "0.8.0"
+
+# When developing locally you can use a local copy of dependencies like so:
+# photoncube2video = { path = "../photoncube2video" }
+photoncube2video = { git = "https://github.com/WISION-Lab/photoncube2video" }
 
 # Pin pyo3 to 0.15.2 as it's the last version to support py36, see: https://github.com/PyO3/maturin/pull/945
 pyo3 = { version = "0.15.2", features = ["extension-module", "anyhow", "abi3-py36"] }
