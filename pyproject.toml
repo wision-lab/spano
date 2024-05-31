@@ -20,7 +20,9 @@ dependencies = [
 dev = [
     "pytest",
     "black",
-    "imageio"
+    "imageio",
+    "matplotlib",
+    "invoke"
 ]
 
 [tool.maturin]
