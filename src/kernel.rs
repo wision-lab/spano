@@ -6,7 +6,7 @@ use burn::backend::wgpu::{
     into_contiguous, kernel_wgsl, FloatElement, GraphicsApi, IntElement, JitBackend, Kernel,
     KernelSource, SourceKernel, SourceTemplate, WgpuRuntime, WorkGroup, WorkgroupSize,
 };
-use burn_tensor::ops::FloatTensor;
+use burn_tensor::ops::{BoolTensor, FloatTensor};
 use derive_new::new;
 
 // Source the kernel written in WGSL.
@@ -16,6 +16,7 @@ kernel_wgsl!(WarpRaw, "./kernel.wgsl");
 #[derive(new, Debug)]
 struct WarpKernel<E: FloatElement> {
     cube_dim: WorkgroupSize,
+    background: Vec<f32>,
     _elem: PhantomData<E>,
 }
 
@@ -24,12 +25,16 @@ impl<E: FloatElement> KernelSource for WarpKernel<E> {
     fn source(&self) -> SourceTemplate {
         // Extend our raw kernel with cube size information using the
         // `SourceTemplate` trait.
+        let bkg_str = (self.background.iter().map(|i| format!("{:.4}", i)))
+            .collect::<Vec<_>>()
+            .join(", ");
+
         WarpRaw::new()
             .source()
             .register("workgroup_size_x", self.cube_dim.x.to_string())
             .register("workgroup_size_y", self.cube_dim.y.to_string())
             .register("workgroup_size_z", self.cube_dim.z.to_string())
-            .register("background_color", "0.0, 0.0, 0.0".to_string())
+            .register("background_color", bkg_str.to_string())
             .register("padding", "1.0".to_string())
             .register("elem", E::type_name())
             .register("int", "i32")
@@ -38,25 +43,23 @@ impl<E: FloatElement> KernelSource for WarpKernel<E> {
 
 /// We create our own Backend trait that extends the Burn backend trait.
 pub trait Backend: burn::tensor::backend::Backend {
-    fn into_contiguous<const D: usize>(tensor: FloatTensor<Self, D>) -> FloatTensor<Self, D>;
-
     fn warp_into_tensor3(
         mapping: FloatTensor<Self, 2>,
         input: FloatTensor<Self, 3>,
         output: &mut FloatTensor<Self, 3>,
+        valid: &mut BoolTensor<Self, 2>,
+        background: Vec<f32>,
     );
 }
 
 /// Implement our custom backend trait for the existing backend `WgpuBackend`.
 impl<G: GraphicsApi, F: FloatElement, I: IntElement> Backend for JitBackend<WgpuRuntime<G, F, I>> {
-    fn into_contiguous<const D: usize>(tensor: FloatTensor<Self, D>) -> FloatTensor<Self, D> {
-        into_contiguous(tensor)
-    }
-
     fn warp_into_tensor3(
         mapping: FloatTensor<Self, 2>,
         input: FloatTensor<Self, 3>,
         output: &mut FloatTensor<Self, 3>,
+        valid: &mut BoolTensor<Self, 2>,
+        background: Vec<f32>,
     ) {
         // Validate devices
         if mapping.device != input.device {
@@ -64,18 +67,28 @@ impl<G: GraphicsApi, F: FloatElement, I: IntElement> Backend for JitBackend<Wgpu
         }
         input.assert_is_on_same_device(&output);
 
-        // Define workgroup size, hardcoded for simplicity.
-        let workgroup_size = WorkgroupSize { x: 16, y: 16, z: 1 };
-
-        // Create the kernel.
-        let kernel = WarpKernel::<F>::new(workgroup_size);
-
         // For simplicity, make sure each tensor is continuous.
         let mapping = into_contiguous(mapping);
         let input = into_contiguous(input);
         if !output.is_contiguous() && output.shape.dims.iter().all(|&d| d != 1) {
             panic!("Output tensor must be contiguous");
         }
+        if !valid.is_contiguous() && valid.shape.dims.iter().all(|&d| d != 1) {
+            panic!("Valid tensor must be contiguous");
+        }
+
+        // Validate sizes.
+        if output.shape.dims[0] != valid.shape.dims[0]
+            || output.shape.dims[1] != valid.shape.dims[1]
+        {
+            panic!("Output and Valid tensor should have same height and width");
+        }
+
+        // Define workgroup size, hardcoded for simplicity.
+        let workgroup_size = WorkgroupSize { x: 16, y: 16, z: 1 };
+
+        // Create the kernel.
+        let kernel = WarpKernel::<F>::new(workgroup_size, background);
 
         // Build info buffer with tensor information needed by the kernel, such as shapes and strides.
         let input_shape: Vec<u32> = input.shape.dims.iter().map(|i| *i as u32).collect();
@@ -103,6 +116,7 @@ impl<G: GraphicsApi, F: FloatElement, I: IntElement> Backend for JitBackend<Wgpu
                 &mapping.handle,
                 &input.handle,
                 &output.handle,
+                &valid.handle,
                 &input_shape_handle,
                 &output_shape_handle,
             ],

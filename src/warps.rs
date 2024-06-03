@@ -1,6 +1,10 @@
 use std::{ops::DivAssign, str::FromStr};
 
 use anyhow::Result;
+use burn_tensor::{
+    ops::{BoolTensor, FloatTensor},
+    Shape, Tensor,
+};
 use conv::ValueInto;
 use heapless::Vec as hVec;
 use image::Pixel;
@@ -22,7 +26,8 @@ use rayon::{
 };
 use strum::{EnumCount, VariantArray};
 use strum_macros::{Display, EnumString};
-// use crate::kernel::{Backend, FloatTensor};
+
+use crate::kernel::Backend;
 
 // Note: We cannot use #[pyclass] her as we're stuck in pyo3@0.15.2 to support py36, so
 // we use `EnumString` to convert strings into their enum values.
@@ -59,6 +64,13 @@ pub struct Mapping {
 impl Mapping {
     pub fn from_matrix(mat: Array2<f32>, kind: TransformationType) -> Self {
         Self { mat, kind }
+    }
+
+    pub fn as_tensor2<B: Backend>(&self, device: &B::Device) -> FloatTensor<B, 2> {
+        // TODO: This is likely suboptimal, self.mat should be made into a tensor at some point.
+        Tensor::<B, 1>::from_floats(&self.mat.clone().into_raw_vec()[..], &device)
+            .reshape(Shape::new([3, 3]))
+            .into_primitive()
     }
 
     pub fn warp_points<T>(&self, points: &Array2<T>) -> Array2<f32>
@@ -339,6 +351,52 @@ impl Mapping {
                 func(out_slice, &value);
                 *valid_slice = true;
             });
+    }
+
+    pub fn warp_tensor3<B: Backend>(
+        &self,
+        data: FloatTensor<B, 3>,
+        out_size: (usize, usize),
+        background: Option<Vec<f32>>,
+    ) -> (FloatTensor<B, 3>, BoolTensor<B, 2>) {
+        let (h, w) = out_size;
+        let [_, _, c] = B::float_shape(&data).dims;
+        let device = &B::float_device(&data);
+        let mut out = B::float_zeros(Shape::new([h, w, c]), &device);
+        let mut valid = B::bool_empty(Shape::new([h, w]), &device);
+
+        self.warp_tensor3_into::<B>(data, &mut out, &mut valid, background);
+        (out, valid)
+    }
+
+    /// Main interface for warping tensors, use directly if output/valid buffers can be reused.
+    /// It uses a custom WSGL compute shader to accelerate warping. Both the warping and bilinear
+    /// interpolation are done in the shader. See `kernel.wsgl` and `kernel.rs` for more.
+    ///
+    /// Args:
+    ///     data:
+    ///         Data to warp from, this can be any 3 dimensional tensor.
+    ///     out:
+    ///         Pre-allocated buffer in which to put interpolated data.
+    ///     valid:
+    ///         Pre-allocated buffer which will hold which pixels have been warped. This tracks which
+    ///         pixels are out of bounds. The two first dimensions here need to match that of `out`.
+    ///     background: If provided, interpolate between this color and data when sample is near border.
+    pub fn warp_tensor3_into<B: Backend>(
+        &self,
+        data: FloatTensor<B, 3>,
+        out: &mut FloatTensor<B, 3>,
+        valid: &mut BoolTensor<B, 2>,
+        background: Option<Vec<f32>>,
+    ) {
+        let bkg = background.unwrap_or(vec![0.0, 0.0, 0.0]);
+        B::warp_into_tensor3(
+            self.as_tensor2::<B>(&B::float_device(&data)),
+            data,
+            out,
+            valid,
+            bkg,
+        );
     }
 }
 

@@ -50,6 +50,29 @@ spano pano -i binary.npy -s 0 -e 64000 -t rot90 -t flip-ud --colorspad-fix --gra
 ```
 On a 5600G, this takes about 1min 20s. 
 
+## Common Isuues
+
+- "No adapter found for graphics API AutoGraphicsApi"
+  
+  You might have to install vulkan binaries, ie: `apt install vulkan-tools`. See [here for more](https://github.com/tracel-ai/burn/issues/1691).
+
+- "libEGL warning: failed to open /dev/dri/renderD128: Permission denied" or "libEGL warning: failed to open /dev/dri/card0: Permission denied"
+  
+  This is likely because your user isn't part of the group who owns those devices. First, figure out what groups are being used:
+  ```shell
+  >> ls -al /dev/dri
+  total 0                                                                                                                       
+  drwxr-xr-x  3 root root        100 Jun  3 16:09 .                                                                             
+  drwxr-xr-x 19 root root       4320 Jun  3 16:09 ..          
+  drwxr-xr-x  2 root root         80 Jun  3 16:09 by-path
+  crw-rw----  1 root video  226,   0 Jun  3 16:09 card0        
+  crw-rw----  1 root render 226, 128 Jun  3 16:09 renderD128          
+  ```
+  Here the groups are `video` and `render`. Add your username to these groups like so:
+  ```shell 
+  sudo usermod -a -G <GROUPNAME> <USERNAME>
+  ```   
+  Finally, for these to take effect, _reboot_.
 
 # Development
 

@@ -3010,6 +3010,7 @@ dependencies = [
  "anyhow",
  "approx 0.5.1",
  "burn",
+ "burn-jit",
  "burn-tensor",
  "bytemuck",
  "cached",

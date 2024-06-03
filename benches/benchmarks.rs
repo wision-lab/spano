@@ -1,7 +1,8 @@
 use burn::{
     backend::wgpu::{AutoGraphicsApi, WgpuRuntime},
-    tensor::ops::FloatTensorOps,
+    tensor::ops::{BoolTensorOps, FloatTensorOps},
 };
+use burn_jit::kernel::into_contiguous;
 use burn_tensor::{Shape, Tensor};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use image::{
@@ -88,7 +89,9 @@ fn benchmark_warp_tensor3(c: &mut Criterion) {
         .reshape(shape.clone())
         .into_primitive();
     let output = B::float_zeros(shape.clone(), device);
-    let output = B::into_contiguous(output);
+    let output = into_contiguous(output);
+    let valid = B::bool_empty(Shape::new([h as usize, w as usize]), device);
+    let valid = into_contiguous(valid);
 
     c.bench_function("warp_tensor3", |b| {
         b.iter(|| {
@@ -96,6 +99,8 @@ fn benchmark_warp_tensor3(c: &mut Criterion) {
                 black_box(mapping.clone()),
                 black_box(input.clone()),
                 &mut black_box(output.clone()),
+                &mut black_box(valid.clone()),
+                vec![0.0, 0.0, 0.0],
             );
         })
     });

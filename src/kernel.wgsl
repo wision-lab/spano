@@ -12,10 +12,14 @@ var<storage, read_write> output: array<{{ elem }}>;
 
 @group(0)
 @binding(3)
-var<storage, read> input_shape_handle: array<u32>;
+var<storage, read_write> valid: array<u32>;
 
 @group(0)
 @binding(4)
+var<storage, read> input_shape_handle: array<u32>;
+
+@group(0)
+@binding(5)
 var<storage, read> output_shape_handle: array<u32>;
 
 const BLOCK_SIZE = vec3({{ workgroup_size_x }}u, {{ workgroup_size_y }}u, {{ workgroup_size_z }}u);
@@ -86,9 +90,12 @@ fn main(
     let in_range_x = -{{ padding }}f <= x && x <= f32(src_cols) - 1.0 + {{ padding }}f;
     let in_range_y = -{{ padding }}f <= y && y <= f32(src_rows) - 1.0 + {{ padding }}f;
 
+    let out_index = get_dst_index(row, col, channel);
+    let valid_index = get_dst_index(row, col, 0u);
+
     if !in_range_x || !in_range_y {
-        let index = get_dst_index(row, col, channel);
-        output[index] = BACKGROUND_COLOR[channel];
+        output[out_index] = BACKGROUND_COLOR[channel];
+        valid[valid_index] = 0u;
         return;
     }
 
@@ -109,6 +116,6 @@ fn main(
     let br = get_pix_or_bkg(right, bottom, channel);
     let val = clamp(top_weight * left_weight * tl + top_weight * right_weight * tr + bottom_weight * left_weight * bl + bottom_weight * right_weight * br, 0.0, 1.0);
 
-    let index = get_dst_index(row, col, channel);
-    output[index] = val;
+    output[out_index] = val;
+    valid[valid_index] = 1u;
 }

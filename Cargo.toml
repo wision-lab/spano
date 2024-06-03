@@ -45,6 +45,7 @@ burn = { version = "0.13.2", default-features = false, features = ["wgpu", "auto
 bytemuck = "1.16.0"
 burn-tensor = "0.13.2"
 derive-new = "0.6.0"
+burn-jit = "0.13.2"
 
 
 [package.metadata.cargo-machete]
