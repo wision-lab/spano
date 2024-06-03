@@ -41,6 +41,10 @@ strum_macros = "0.26.2"
 strum = { version = "0.26.2", features = ["derive"] }
 numpy = "0.15.1"
 cached = "0.49.3"
+burn = { version = "0.13.2", default-features = false, features = ["wgpu", "autotune", "template", "fusion"] }
+bytemuck = "1.16.0"
+burn-tensor = "0.13.2"
+derive-new = "0.6.0"
 
 
 [package.metadata.cargo-machete]

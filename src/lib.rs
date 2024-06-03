@@ -2,6 +2,7 @@
 
 pub mod blend;
 pub mod cli;
+pub mod kernel;
 pub mod lk;
 pub mod scripts;
 pub mod transpose;

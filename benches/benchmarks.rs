@@ -1,13 +1,21 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use burn::{
+    backend::wgpu::{AutoGraphicsApi, WgpuRuntime},
+    tensor::ops::FloatTensorOps,
+};
+use burn_tensor::{Shape, Tensor};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use image::{
     imageops::{resize, FilterType::CatmullRom},
     io::Reader as ImageReader,
+    Rgb,
 };
 use ndarray::{array, Array3};
+use photoncube2video::transforms::image_to_array3;
 #[cfg(target_os = "linux")]
 use pprof::criterion::{Output, PProfProfiler};
 use spano::{
     blend::{distance_transform, merge_images},
+    kernel::Backend,
     lk::iclk,
     warps::{Mapping, TransformationType},
 };
@@ -39,6 +47,55 @@ pub fn benchmark_warp_array3(c: &mut Criterion) {
                 &data,
                 (h as usize, w as usize),
                 Some(array![128.0, 0.0, 0.0]),
+            );
+        })
+    });
+}
+
+fn benchmark_warp_tensor3(c: &mut Criterion) {
+    type B = burn::backend::wgpu::JitBackend<WgpuRuntime<AutoGraphicsApi, f32, i32>>;
+    let device = &Default::default();
+
+    let mapping = Tensor::<B, 1>::from_floats(
+        [
+            1.9068071,
+            0.09958228,
+            -171.64162,
+            0.3666181,
+            1.5628628,
+            -92.86306,
+            0.0013926513,
+            0.00030605582,
+            1.0,
+        ],
+        device,
+    )
+    .reshape(Shape::new([3, 3]))
+    .into_primitive();
+
+    let img_src = ImageReader::open("tests/source.png")
+        .unwrap()
+        .decode()
+        .unwrap()
+        .into_rgb8();
+    let (w, h) = img_src.dimensions();
+    let shape = Shape::new([h as usize, w as usize, 3]);
+
+    let input = image_to_array3::<Rgb<u8>>(img_src)
+        .mapv(|v| (v as f32) / 255.0)
+        .into_raw_vec();
+    let input = Tensor::<B, 1>::from_floats(&input[..], device)
+        .reshape(shape.clone())
+        .into_primitive();
+    let output = B::float_zeros(shape.clone(), device);
+    let output = B::into_contiguous(output);
+
+    c.bench_function("warp_tensor3", |b| {
+        b.iter(|| {
+            B::warp_into_tensor3(
+                black_box(mapping.clone()),
+                black_box(input.clone()),
+                &mut black_box(output.clone()),
             );
         })
     });
@@ -125,6 +182,7 @@ criterion_group! {
         );
     targets =
         benchmark_warp_array3,
+        benchmark_warp_tensor3,
         benchmark_distance_transform,
         benchmark_iclk,
         benchmark_merge_images
@@ -134,6 +192,7 @@ criterion_group! {
 criterion_group! {
     benches,
     benchmark_warp_array3,
+    benchmark_warp_tensor3,
     benchmark_distance_transform,
     benchmark_iclk,
     benchmark_merge_images
