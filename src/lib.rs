@@ -5,6 +5,7 @@ pub mod cli;
 pub mod kernel;
 pub mod lk;
 pub mod scripts;
+pub mod transforms;
 pub mod transpose;
 pub mod utils;
 pub mod warps;

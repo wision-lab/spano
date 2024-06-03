@@ -27,7 +27,7 @@ use rayon::{
 use strum::{EnumCount, VariantArray};
 use strum_macros::{Display, EnumString};
 
-use crate::kernel::Backend;
+use crate::{kernel::Backend, transforms::image_to_tensor3};
 
 // Note: We cannot use #[pyclass] her as we're stuck in pyo3@0.15.2 to support py36, so
 // we use `EnumString` to convert strings into their enum values.

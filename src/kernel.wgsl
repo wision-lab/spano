@@ -114,7 +114,7 @@ fn main(
     let tr = get_pix_or_bkg(right, top, channel);
     let bl = get_pix_or_bkg(left, bottom, channel);
     let br = get_pix_or_bkg(right, bottom, channel);
-    let val = clamp(top_weight * left_weight * tl + top_weight * right_weight * tr + bottom_weight * left_weight * bl + bottom_weight * right_weight * br, 0.0, 1.0);
+    let val = top_weight * left_weight * tl + top_weight * right_weight * tr + bottom_weight * left_weight * bl + bottom_weight * right_weight * br;
 
     output[out_index] = val;
     valid[valid_index] = 1u;
