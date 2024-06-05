@@ -1,33 +1,21 @@
-use std::{ops::DivAssign, str::FromStr};
-
-use anyhow::Result;
 use burn_tensor::{
     ops::{BoolTensor, FloatTensor},
     Shape, Tensor,
 };
-use conv::ValueInto;
-use heapless::Vec as hVec;
 use image::Pixel;
 use imageproc::definitions::{Clamp, Image};
-use itertools::{chain, multizip};
-use ndarray::{
-    array, concatenate, s, stack, Array, Array1, Array2, Array3, ArrayBase, Axis, Dimension, Ix3,
-    RawData,
-};
+use itertools::chain;
+use ndarray::{array, Array, Array1, Array2, Axis};
 use ndarray_interp::interp1d::{CubicSpline, Interp1DBuilder, Linear};
 use ndarray_linalg::solve::Inverse;
-use num_traits::AsPrimitive;
-use numpy::{PyArray1, PyArray2, PyArray3, ToPyArray};
-use photoncube2video::transforms::{array3_to_image, ref_image_to_array3};
-use pyo3::{prelude::*, types::PyType};
-use rayon::{
-    iter::{IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator},
-    slice::ParallelSliceMut,
-};
+use num_traits::ToPrimitive;
 use strum::{EnumCount, VariantArray};
 use strum_macros::{Display, EnumString};
 
-use crate::{kernel::Backend, transforms::image_to_tensor3};
+use crate::{
+    kernel::Backend,
+    transforms::{array2_to_tensor2, image_to_tensor3, tensor2_to_array2, tensor3_to_image},
+};
 
 // Note: We cannot use #[pyclass] her as we're stuck in pyo3@0.15.2 to support py36, so
 // we use `EnumString` to convert strings into their enum values.
@@ -53,64 +41,79 @@ impl TransformationType {
     }
 }
 
-#[pyclass]
+// #[pyclass]
 #[derive(Debug, Clone)]
-pub struct Mapping {
-    pub mat: Array2<f32>,
+pub struct Mapping<B: Backend> {
+    pub mat: Tensor<B, 2>,
     pub kind: TransformationType,
 }
 
 // Note: Methods in this `impl` block are _not_ exposed to python
-impl Mapping {
-    pub fn from_matrix(mat: Array2<f32>, kind: TransformationType) -> Self {
+impl<B: Backend> Mapping<B> {
+    pub fn from_tensor(mat: Tensor<B, 2>, kind: TransformationType) -> Self {
         Self { mat, kind }
     }
 
-    pub fn as_tensor2<B: Backend>(&self, device: &B::Device) -> FloatTensor<B, 2> {
-        // TODO: This is likely suboptimal, self.mat should be made into a tensor at some point.
-        Tensor::<B, 1>::from_floats(&self.mat.clone().into_raw_vec()[..], &device)
-            .reshape(Shape::new([3, 3]))
-            .into_primitive()
+    pub fn from_matrix(mat: Array2<f32>, kind: TransformationType) -> Self {
+        let device = Default::default();
+        Self {
+            mat: array2_to_tensor2::<f32, B>(mat, &device),
+            kind,
+        }
     }
 
-    pub fn warp_points<T>(&self, points: &Array2<T>) -> Array2<f32>
-    where
-        T: AsPrimitive<f32> + Copy + 'static,
-    {
-        let points = points.mapv(|v| v.as_());
+    pub fn device(&self) -> B::Device {
+        self.mat.device()
+    }
 
+    /// Warp a set of Nx2 points using the mapping.
+    pub fn warp_points(&self, points: Tensor<B, 2>) -> Tensor<B, 2> {
         if self.kind == TransformationType::Identity {
             return points;
         }
 
-        let num_points = points.shape()[0];
-        let points = concatenate![Axis(1), points, Array2::ones((num_points, 1))];
+        println!("{:?}", points.clone().to_data());
+        let num_points = points.shape().dims[0];
+        let ones = Tensor::ones(Shape::new([num_points, 1]), &self.device());
+        let points = Tensor::cat(vec![points, ones], 1);
 
-        let mut warped_points: Array2<f32> = self.mat.dot(&points.t());
-        let d = warped_points.index_axis(Axis(0), 2).mapv(|v| v.max(1e-8));
-        warped_points.div_assign(&d);
+        let warped_points = self.mat.clone().matmul(points.transpose()).transpose();
+        let d = warped_points.clone().slice([0..num_points, 2..3]);
+        let warped_points = warped_points.slice([0..num_points, 0..2]);
 
-        warped_points.t().slice(s![.., ..2]).to_owned()
+        warped_points.div(d)
     }
 
-    pub fn corners(&self, size: (usize, usize)) -> Array2<f32> {
+    /// Get location of corners of an image of shape `size` once warped with `self`.
+    pub fn corners(&self, size: (usize, usize)) -> Tensor<B, 2> {
         let (w, h) = size;
-        let corners = array![[0, 0], [w, 0], [w, h], [0, h]];
-        self.inverse().warp_points(&corners)
+        let corners = array2_to_tensor2(
+            array![
+                [0.0, 0.0],
+                [w as f32, 0.0],
+                [w as f32, h as f32],
+                [0.0, h as f32]
+            ],
+            &self.device(),
+        );
+        self.inverse().warp_points(corners)
     }
 
-    pub fn extent(&self, size: (usize, usize)) -> (Array1<f32>, Array1<f32>) {
+    /// Equivalent to getting minimum and maximum x/y coordinates of `corners`.
+    pub fn extent(&self, size: (usize, usize)) -> (Tensor<B, 1>, Tensor<B, 1>) {
         let corners = self.corners(size);
-        let min_coords = corners.map_axis(Axis(0), |view| {
-            view.iter().fold(f32::INFINITY, |a, b| a.min(*b))
-        });
-        let max_coords = corners.map_axis(Axis(0), |view| {
-            view.iter().fold(-f32::INFINITY, |a, b| a.max(*b))
-        });
+        let min_coords = corners.clone().min_dim(0).squeeze(0);
+        let max_coords = corners.max_dim(0).squeeze(0);
         (min_coords, max_coords)
     }
 
-    pub fn maximum_extent(maps: &[Self], sizes: &[(usize, usize)]) -> (Array1<f32>, Self) {
+    /// Get maximum extent of a collection of warps and theirs sizes.
+    /// Sizes are expected to be (x, y) pairs, _not_ (h, w)/(y, x). Similarly extent will be (x, y).
+    /// Maps and Sizes might be different lengths:
+    ///     - Maybe all warps operate on a single size
+    ///     - If warps are the same, this is just max size
+    /// Returns an extent (max width, max height) and offset warp.
+    pub fn maximum_extent(maps: &[Self], sizes: &[(usize, usize)]) -> (Tensor<B, 1>, Self) {
         // We detect which is longer and cycle the other one.
         let (min_coords, max_coords): (Vec<_>, Vec<_>) = if maps.len() >= sizes.len() {
             maps.iter()
@@ -125,22 +128,18 @@ impl Mapping {
                 .unzip()
         };
 
-        let min_coords: Vec<_> = min_coords.iter().map(|arr| arr.view()).collect();
-        let min_coords = stack(Axis(0), &min_coords[..])
-            .unwrap()
-            .map_axis(Axis(0), |view| {
-                view.iter().fold(f32::INFINITY, |a, b| a.min(*b))
-            });
+        let min_coords: Tensor<B, 1> = Tensor::stack::<2>(min_coords, 0).min_dim(0).squeeze(0);
+        let max_coords: Tensor<B, 1> = Tensor::stack::<2>(max_coords, 0).min_dim(0).squeeze(0);
 
-        let max_coords: Vec<_> = max_coords.iter().map(|arr| arr.view()).collect();
-        let max_coords = stack(Axis(0), &max_coords[..])
-            .unwrap()
-            .map_axis(Axis(0), |view| {
-                view.iter().fold(-f32::INFINITY, |a, b| a.max(*b))
-            });
-
-        let extent = max_coords - &min_coords;
-        let offset = Mapping::from_params(min_coords.to_vec());
+        let extent = max_coords - min_coords.clone();
+        let offset = Mapping::from_params(
+            min_coords
+                .to_data()
+                .value
+                .into_iter()
+                .map(|i| i.to_f32().expect("FloatElement should cast to f32"))
+                .collect::<Vec<_>>(),
+        );
         (extent, offset)
     }
 
@@ -152,208 +151,19 @@ impl Mapping {
     ) -> Image<P>
     where
         P: Pixel,
-        <P as Pixel>::Subpixel:
-            num_traits::Zero + Clone + Copy + ValueInto<f32> + Send + Sync + Clamp<f32>,
         f32: From<<P as Pixel>::Subpixel>,
+        <P as Pixel>::Subpixel: Clamp<<B as burn::prelude::Backend>::FloatElem>,
     {
-        let arr = ref_image_to_array3(data);
-        let background = background.map(|v| Array1::from_iter(v.channels().to_owned()));
-        let (out, _) = self.warp_array3(&arr, out_size, background);
-        array3_to_image(out)
+        let background =
+            background.map(|v| v.channels().into_iter().map(|i| f32::from(*i)).collect());
+        let img_src = image_to_tensor3::<P, B>(data.clone(), &self.device());
+        let (img_warped, _) = self.warp_tensor3(img_src.into_primitive(), out_size, background);
+        tensor3_to_image::<P, B>(Tensor::from_primitive(img_warped))
     }
 
-    pub fn warp_array3<S, T>(
-        &self,
-        data: &ArrayBase<S, Ix3>,
-        out_size: (usize, usize),
-        background: Option<Array1<T>>,
-    ) -> (Array3<T>, Array2<bool>)
-    where
-        S: RawData<Elem = T> + ndarray::Data,
-        T: num_traits::Zero + Clone + Copy + ValueInto<f32> + Send + Sync + Clamp<f32>,
-        f32: From<T>,
-    {
-        let (h, w) = out_size;
-        let (_, _, c) = data.dim();
-        let mut out = Array3::zeros((h, w, c));
-        let mut valid = Array2::from_elem((h, w), false);
-
-        // Points is a Nx2 array of xy pairs
-        let points = Array::from_shape_fn((h * w, 2), |(i, j)| if j == 0 { i % w } else { i / w });
-
-        self.warp_array3_into(data, &mut out, &mut valid, &points, background, None);
-        (out, valid)
-    }
-
-    /// Main workhorse for warping, use directly if output/points buffers can be
-    /// reused or if something other than simple assignment is needed.
-    ///
-    /// Args:
-    ///     data:
-    ///         Data to warp from, this can be any Array3
-    ///     out:
-    ///         Pre-allocated buffer in which to put interpolated data. In the simplest case,
-    ///         it should be an Array3 as well, but since we can interpolate at any arbitrary
-    ///         point, it need not be of dimensionality 3. In practice we operate on the flattened
-    ///         buffer anyways, so the only important value is the channel depth, which is assumed
-    ///         to be the same as the data channel depth.
-    ///     valid:
-    ///         Pre-allocated buffer which will hold which pixels have been warped. This tracks which
-    ///         pixels are out of bounds. Again, dimensionality is not important here.
-    ///     points: Nx2 array of xy pairs of points to sample (after warping them by self).
-    ///     background: If provided, interpolate betwen this color and data when sample is near border.
-    ///     func:
-    ///         Option of a function that describes what to do with sampled pixel.
-    ///         It takes a mutable reference slice of the `out` buffer and a (possibly longer)
-    ///         ref slice of the new sampled pixel.    
-    #[allow(clippy::type_complexity)]
-    pub fn warp_array3_into<T, S1, S2, S3, D1, D2>(
-        &self,
-        data: &ArrayBase<S1, Ix3>,
-        out: &mut ArrayBase<S2, D1>,
-        valid: &mut ArrayBase<S3, D2>,
-        points: &Array2<usize>,
-        background: Option<Array1<T>>,
-        func: Option<fn(&mut [T], &[T])>,
-    ) where
-        S1: RawData<Elem = T> + ndarray::Data,
-        S2: RawData<Elem = T> + ndarray::DataMut,
-        S3: RawData<Elem = bool> + ndarray::DataMut,
-        T: num_traits::Zero + Clone + Copy + ValueInto<f32> + Send + Sync + Clamp<f32>,
-        D1: Dimension,
-        D2: Dimension,
-        f32: From<T>,
-    {
-        const MAX_CHANNELS: usize = 8;
-        let (data_h, data_w, data_c) = data.dim();
-
-        if data_c > MAX_CHANNELS {
-            panic!(
-                "Maximum supported channel depth is {MAX_CHANNELS}, data has {data_c} channels."
-            );
-        }
-
-        // If no reduction function is present, simply assign to slice
-        let func = func.unwrap_or(|dst, src| dst.iter_mut().zip(src).for_each(|(d, s)| *d = *s));
-
-        // If a background is specified, use that, otherwise use zeros
-        let (background, has_bkg) = if let Some(bkg) = background {
-            let bkg_c = bkg.len();
-            if bkg_c != data_c {
-                panic!("Background must have same number of channels as data, got {bkg_c} and {data_c} respectively.");
-            }
-            (bkg, true)
-        } else {
-            (Array1::<T>::zeros(data_c), false)
-        };
-
-        // Warp all points and determine indices of in-bound ones
-        let warpd = self.warp_points(points);
-        let in_range_x =
-            |x: f32, padding: f32| -padding <= x && x <= (data_w as f32) - 1.0 + padding;
-        let in_range_y =
-            |y: f32, padding: f32| -padding <= y && y <= (data_h as f32) - 1.0 + padding;
-        let in_range = |x: f32, y: f32| {
-            in_range_x(x, has_bkg as i32 as f32) && in_range_y(y, has_bkg as i32 as f32)
-        };
-
-        // Data sampler (enables smooth transition to bkg, i.e no jaggies)
-        let bkg_slice = background
-            .as_slice()
-            .expect("Background should be contiguous in memory");
-        let data_slice = data
-            .as_slice()
-            .expect("Data should be contiguous and HWC format");
-        let get_pix_unchecked = |x: f32, y: f32| {
-            let offset = ((y as usize) * data_w + (x as usize)) * data_c;
-            unsafe { data_slice.get_unchecked(offset..offset + data_c) }
-        };
-        let get_pix_or_bkg = |x: f32, y: f32| {
-            if x < 0f32 || x >= data_w as f32 || y < 0f32 || y >= data_h as f32 {
-                bkg_slice
-            } else {
-                get_pix_unchecked(x, y)
-            }
-        };
-
-        (
-            out.as_slice_mut().unwrap().par_chunks_mut(data_c),
-            valid.as_slice_mut().unwrap().par_iter_mut(),
-            warpd.column(0).axis_iter(Axis(0)),
-            warpd.column(1).axis_iter(Axis(0)),
-        )
-            .into_par_iter()
-            .for_each(|(out_slice, valid_slice, x_, y_)| {
-                let x = *x_.into_scalar();
-                let y = *y_.into_scalar();
-
-                if !in_range(x, y) {
-                    if has_bkg {
-                        func(out_slice, bkg_slice);
-                    }
-                    *valid_slice = false;
-                    return;
-                }
-
-                // Actually do bilinear interpolation
-                let left = x.floor();
-                let right = left + 1f32;
-                let top = y.floor();
-                let bottom = top + 1f32;
-                let right_weight = x - left;
-                let left_weight = 1.0 - right_weight;
-                let bottom_weight = y - top;
-                let top_weight = 1.0 - bottom_weight;
-
-                let (tl, tr, bl, br) = if (0.0 <= left && right <= (data_w as f32) - 1.0)
-                    && (0.0 <= top && bottom <= (data_h as f32) - 1.0)
-                {
-                    // Strictly in range, no neighbooring pixels are bkg
-                    (
-                        get_pix_unchecked(left, top),
-                        get_pix_unchecked(right, top),
-                        get_pix_unchecked(left, bottom),
-                        get_pix_unchecked(right, bottom),
-                    )
-                } else {
-                    // Might be on border...
-                    (
-                        get_pix_or_bkg(left, top),
-                        get_pix_or_bkg(right, top),
-                        get_pix_or_bkg(left, bottom),
-                        get_pix_or_bkg(right, bottom),
-                    )
-                };
-
-                // Currently, the channel dimension cannot be known at compile time
-                // even if it's usually either P::CHANNEL_COUNT, 3 or 1. Letting the compiler know
-                // this info would be done via generic_const_exprs which are currenly unstable.
-                // Without this we can either:
-                //      1) Collect all channels into a Vec and process that, which incurs a _lot_
-                //         of allocs of small vectors (one per pixel), but allows for whole pixel operations.
-                //      2) Process subpixels in a streaming manner with iterators. Avoids unneccesary
-                //         allocs but constrains us to only subpixel ops (add, mul, etc).
-                // We choose to collect into a vector for greater flexibility, however we use a heapless
-                // vectors which saves us from the alloc at the cost of a constant and maximum channel depth.
-                // The alternative (subpix) was implemented in commit "[main 7ecb546] load photoncube".
-                // See: https://github.com/rust-lang/rust/issues/76560
-                let value: hVec<T, MAX_CHANNELS> = multizip((tl, tr, bl, br))
-                    .map(|(tl, tr, bl, br)| {
-                        T::clamp(
-                            top_weight * left_weight * f32::from(*tl)
-                                + top_weight * right_weight * f32::from(*tr)
-                                + bottom_weight * left_weight * f32::from(*bl)
-                                + bottom_weight * right_weight * f32::from(*br),
-                        )
-                    })
-                    .collect();
-
-                func(out_slice, &value);
-                *valid_slice = true;
-            });
-    }
-
-    pub fn warp_tensor3<B: Backend>(
+    /// Warp array using mapping into a new buffer of shape `out_size`.
+    /// This returns the new buffer along with a mask of which pixels were warped.
+    pub fn warp_tensor3(
         &self,
         data: FloatTensor<B, 3>,
         out_size: (usize, usize),
@@ -365,7 +175,7 @@ impl Mapping {
         let mut out = B::float_zeros(Shape::new([h, w, c]), &device);
         let mut valid = B::bool_empty(Shape::new([h, w]), &device);
 
-        self.warp_tensor3_into::<B>(data, &mut out, &mut valid, background);
+        self.warp_tensor3_into(data, &mut out, &mut valid, background);
         (out, valid)
     }
 
@@ -382,7 +192,7 @@ impl Mapping {
     ///         Pre-allocated buffer which will hold which pixels have been warped. This tracks which
     ///         pixels are out of bounds. The two first dimensions here need to match that of `out`.
     ///     background: If provided, interpolate between this color and data when sample is near border.
-    pub fn warp_tensor3_into<B: Backend>(
+    pub fn warp_tensor3_into(
         &self,
         data: FloatTensor<B, 3>,
         out: &mut FloatTensor<B, 3>,
@@ -390,36 +200,13 @@ impl Mapping {
         background: Option<Vec<f32>>,
     ) {
         let bkg = background.unwrap_or(vec![0.0, 0.0, 0.0]);
-        B::warp_into_tensor3(
-            self.as_tensor2::<B>(&B::float_device(&data)),
-            data,
-            out,
-            valid,
-            bkg,
-        );
-    }
-}
-
-// Note: Methods in this `impl` block are exposed to python
-#[pymethods]
-impl Mapping {
-    /// Return a Mapping object based on it's 3x3 matrix.
-    #[classmethod]
-    #[pyo3(
-        name = "from_matrix",
-        text_signature = "(cls, mat: np.ndarray, kind: str) -> Self"
-    )]
-    pub fn from_matrix_py(_: &PyType, mat: &PyArray2<f32>, kind: &str) -> Result<Self> {
-        Ok(Self::from_matrix(
-            mat.to_owned_array(),
-            TransformationType::from_str(kind)?,
-        ))
+        B::warp_into_tensor3(self.mat.clone().into_primitive(), data, out, valid, bkg);
     }
 
     /// Given a list of transform parameters, return the Mapping that would transform a
     /// source point to its destination. The type of mapping depends on the number of params (DoF).
-    #[staticmethod]
-    #[pyo3(text_signature = "(cls, params: List[float]) -> Self")]
+    // #[staticmethod]
+    // #[pyo3(text_signature = "(cls, params: List[float]) -> Self")]
     pub fn from_params(params: Vec<f32>) -> Self {
         let (full_params, kind) = match &params[..] {
             // Identity
@@ -450,55 +237,35 @@ impl Mapping {
     }
 
     /// Return a purely scaling (affine) Mapping.
-    #[staticmethod]
-    #[pyo3(text_signature = "(cls, x: float, y: float) -> Self")]
+    // #[staticmethod]
+    // #[pyo3(text_signature = "(cls, x: float, y: float) -> Self")]
     pub fn scale(x: f32, y: f32) -> Self {
         Self::from_params(vec![x - 1.0, 0.0, 0.0, y - 1.0, 0.0, 0.0])
     }
 
     /// Return a purely translational Mapping.
-    #[staticmethod]
-    #[pyo3(text_signature = "(cls, x: float, y: float) -> Self")]
+    // #[staticmethod]
+    // #[pyo3(text_signature = "(cls, x: float, y: float) -> Self")]
     pub fn shift(x: f32, y: f32) -> Self {
         Self::from_params(vec![x, y])
     }
 
     /// Return an identity Mapping.
-    #[staticmethod]
-    #[pyo3(text_signature = "(cls) -> Self")]
+    // #[staticmethod]
+    // #[pyo3(text_signature = "(cls) -> Self")]
     pub fn identity() -> Self {
         Self::from_params(vec![])
     }
 
-    /// Get maximum extent of a collection of warps and theirs sizes.
-    /// Sizes are expected to be (x, y) pairs, _not_ (h, w)/(y, x). Similarly extent will be (x, y).
-    /// Maps and Sizes might be different lengths:
-    ///     - Maybe all warps operate on a single size
-    ///     - If warps are the same, this is just max size
-    /// Returns an extent (max width, max height) and offset warp.
-    #[staticmethod]
-    #[pyo3(
-        name = "maximum_extent",
-        text_signature = "(maps: List[Self], sizes: List[(int, int)]) -> (np.ndarray, Self)"
-    )]
-    pub fn maximum_extent_py(
-        py: Python<'_>,
-        maps: Vec<Self>,
-        sizes: Vec<(usize, usize)>,
-    ) -> (&PyArray1<f32>, Self) {
-        let (extent, offset) = Self::maximum_extent(&maps, &sizes);
-        (extent.to_pyarray(py), offset)
-    }
-
     /// Interpolate a list of Mappings and query a single point.
-    /// Ex: Mapping.interpolate_scalar(
+    /// Ex: Mapping:<B>:::interpolate_scalar(
     ///         [0, 1],
     ///         [Mapping.identity(), Mapping.shift(10, 20)],
     ///         0.5
-    ///     ) == Mapping.shift(5, 10)
+    ///     ) == Mapping::<B>::shift(5, 10)
     /// See `interpolate_array` for more.
-    #[staticmethod]
-    #[pyo3(text_signature = "(ts: List[float], maps: List[Self], query: float) -> Self:")]
+    // #[staticmethod]
+    // #[pyo3(text_signature = "(ts: List[float], maps: List[Self], query: float) -> Self:")]
     pub fn interpolate_scalar(ts: Vec<f32>, maps: Vec<Self>, query: f32) -> Self {
         Self::interpolate_array(ts, maps, vec![query])
             .into_iter()
@@ -509,10 +276,10 @@ impl Mapping {
     /// Interpolate a list of Mappings and query multiple points.
     /// This defaults to performing a cubic spline iterpolation of the warp params, and
     /// falls back to linear interpolation if not enough data points are known (<2).
-    #[staticmethod]
-    #[pyo3(
-        text_signature = "(ts: List[float], maps: List[Self], query: List[float]) -> List[Self]:"
-    )]
+    // #[staticmethod]
+    // #[pyo3(
+    //     text_signature = "(ts: List[float], maps: List[Self], query: List[float]) -> List[Self]:"
+    // )]
     pub fn interpolate_array(ts: Vec<f32>, maps: Vec<Self>, query: Vec<f32>) -> Vec<Self> {
         let params = Array2::from_shape_vec(
             (maps.len(), 8),
@@ -544,8 +311,8 @@ impl Mapping {
 
     /// Compose/accumulate all pairwise mappings together.
     /// This adds in an identity warp to the start to have one warp per frame.
-    #[staticmethod]
-    #[pyo3(text_signature = "(mappings: List[Self]) -> List[Self]")]
+    // #[staticmethod]
+    // #[pyo3(text_signature = "(mappings: List[Self]) -> List[Self]")]
     pub fn accumulate(mappings: Vec<Self>) -> Vec<Self> {
         // TODO: maybe impl Copy to minimize the clones here...
         // TODO: Can we avoid the above collect and cumulatively compose in parallel?
@@ -558,8 +325,8 @@ impl Mapping {
     }
 
     /// Apply wrt correction such that the wrt warp becomes the identity.
-    #[staticmethod]
-    #[pyo3(text_signature = "(mappings: List[Self], wrt_map: Self) -> List[Self]")]
+    // #[staticmethod]
+    // #[pyo3(text_signature = "(mappings: List[Self], wrt_map: Self) -> List[Self]")]
     pub fn with_respect_to(mappings: Vec<Self>, wrt_map: Self) -> Vec<Self> {
         mappings
             .iter()
@@ -569,8 +336,8 @@ impl Mapping {
 
     /// Apply wrt correction such that the interpolated warp at the
     /// normalized [0, 1] wrt_idx becomes the identity.
-    #[staticmethod]
-    #[pyo3(text_signature = "(mappings: List[Self], wrt_idx: float) -> List[Self]")]
+    // #[staticmethod]
+    // #[pyo3(text_signature = "(mappings: List[Self], wrt_idx: float) -> List[Self]")]
     pub fn with_respect_to_idx(mappings: Vec<Self>, wrt_idx: f32) -> Vec<Self> {
         let wrt_map = Mapping::interpolate_scalar(
             Array::linspace(0.0, 1.0, mappings.len()).to_vec(),
@@ -584,8 +351,8 @@ impl Mapping {
     /// such that the warp of the frame at the normalized [0, 1] wrt index is the identity.
     /// This effectively accumulates the warps, interpolates them to find the
     /// wrp mapping and then uses `with_respect_to_idx` to undo wrt mapping.
-    #[staticmethod]
-    #[pyo3(text_signature = "(mappings: List[Self], wrt_idx: float) -> List[Self]")]
+    // #[staticmethod]
+    // #[pyo3(text_signature = "(mappings: List[Self], wrt_idx: float) -> List[Self]")]
     pub fn accumulate_wrt_idx(mappings: Vec<Self>, wrt_idx: f32) -> Vec<Self> {
         let mappings = Self::accumulate(mappings);
         let wrt_map = Mapping::interpolate_scalar(
@@ -597,9 +364,10 @@ impl Mapping {
     }
 
     /// Get minimum number of parameters that describe the Mapping.
-    #[pyo3(text_signature = "(self) -> List[float]")]
+    // #[pyo3(text_signature = "(self) -> List[float]")]
     pub fn get_params(&self) -> Vec<f32> {
-        let p = (&self.mat.clone() / self.mat[(2, 2)]).into_raw_vec();
+        let mat: Array2<f32> = tensor2_to_array2(self.mat.clone());
+        let p = (&mat.clone() / mat[(2, 2)]).into_raw_vec();
         match &self.kind {
             TransformationType::Identity => vec![],
             TransformationType::Translational => vec![p[2], p[5]],
@@ -612,23 +380,31 @@ impl Mapping {
     }
 
     /// Get all parameters of the Mapping (overparameterized for everything but projective warp).
-    #[pyo3(text_signature = "(self) -> List[float]")]
+    // #[pyo3(text_signature = "(self) -> List[float]")]
     pub fn get_params_full(&self) -> Vec<f32> {
-        let p = (&self.mat.clone() / self.mat[(2, 2)]).into_raw_vec();
+        let mat: Array2<f32> = tensor2_to_array2(self.mat.clone());
+        let p = (&mat.clone() / mat[(2, 2)]).into_raw_vec();
         vec![p[0] - 1.0, p[3], p[1], p[4] - 1.0, p[2], p[5], p[6], p[7]]
     }
 
     /// Invert the mapping by creating new mapping with inverse matrix.
-    #[pyo3(text_signature = "(self) -> Self")]
+    // #[pyo3(text_signature = "(self) -> Self")]
     pub fn inverse(&self) -> Self {
+        // TODO: Is this really necessary?!
+        let mat = array2_to_tensor2(
+            tensor2_to_array2(self.mat.clone())
+                .inv()
+                .expect("Cannot invert mapping"),
+            &self.device(),
+        );
         Self {
-            mat: self.mat.inv().expect("Cannot invert mapping"),
+            mat,
             kind: self.kind,
         }
     }
 
     /// Upgrade Type of warp if it's not unknown, i.e: Identity -> Translational -> Affine -> Projective
-    #[pyo3(text_signature = "(self) -> Self")]
+    // #[pyo3(text_signature = "(self) -> Self")]
     pub fn upgrade(&self) -> Self {
         // Warning: This relies on the UNKNOWN type being first in the enum!
         if self.kind == TransformationType::Unknown {
@@ -639,14 +415,14 @@ impl Mapping {
             .position(|k| *k == self.kind)
             .unwrap();
 
-        Self::from_matrix(
+        Self::from_tensor(
             self.mat.clone(),
             TransformationType::VARIANTS[(idx + 1).min(TransformationType::COUNT - 1)],
         )
     }
 
     /// Downgrade Type of warp if it's not unknown, i.e: Projective -> Affine -> Translational -> Identity
-    #[pyo3(text_signature = "(self) -> Self")]
+    // #[pyo3(text_signature = "(self) -> Self")]
     pub fn downgrade(&self) -> Self {
         // Warning: This relies on the UNKNOWN type being first in the enum!
         if self.kind == TransformationType::Unknown {
@@ -657,7 +433,7 @@ impl Mapping {
             .position(|k| *k == self.kind)
             .unwrap();
 
-        Self::from_matrix(
+        Self::from_tensor(
             self.mat.clone(),
             TransformationType::VARIANTS[(idx - 1).max(1)],
         )
@@ -665,18 +441,19 @@ impl Mapping {
 
     /// Compose with other mappings from left or right. Useful for scaling, offsetting, etc...
     /// Resulting mapping will have be cast to the most general mapping kind of all inputs.
-    #[pyo3(text_signature = "(self, *, lhs: Optional[Self], rhs: Optional[Self]) -> Self")]
+    // #[pyo3(text_signature = "(self, *, lhs: Optional[Self], rhs: Optional[Self]) -> Self")]
     pub fn transform(&self, lhs: Option<Self>, rhs: Option<Self>) -> Self {
-        let (lhs_mat, lhs_kind) = lhs.map_or((Array2::eye(3), TransformationType::Unknown), |m| {
+        let eye = Tensor::<B, 2>::eye(3, &self.device());
+        let (lhs_mat, lhs_kind) = lhs.map_or((eye.clone(), TransformationType::Unknown), |m| {
             (m.mat, m.kind)
         });
 
-        let (rhs_mat, rhs_kind) = rhs.map_or((Array2::eye(3), TransformationType::Unknown), |m| {
+        let (rhs_mat, rhs_kind) = rhs.map_or((eye.clone(), TransformationType::Unknown), |m| {
             (m.mat, m.kind)
         });
 
         Mapping {
-            mat: lhs_mat.dot(&self.mat).dot(&rhs_mat).to_owned(),
+            mat: lhs_mat.matmul(self.mat.clone()).matmul(rhs_mat),
             kind: *[lhs_kind, self.kind, rhs_kind]
                 .iter()
                 .max_by_key(|k| k.num_params())
@@ -686,7 +463,7 @@ impl Mapping {
 
     /// Rescale mapping and keep it's kind intact. This enables a mapping to work
     /// for a rescaled image (since the pixel coordinates get changed too).
-    #[pyo3(text_signature = "(self, scale: float) -> Self")]
+    // #[pyo3(text_signature = "(self, scale: float) -> Self")]
     pub fn rescale(&self, scale: f32) -> Self {
         let mut map = self.transform(
             Some(Mapping::scale(1.0 / scale, 1.0 / scale)),
@@ -695,113 +472,26 @@ impl Mapping {
         map.kind = self.kind;
         map
     }
-
-    /// Warp a set of Nx2 points using the mapping.
-    #[pyo3(
-        name = "warp_points",
-        text_signature = "(self, points: np.ndarray) -> np.ndarray"
-    )]
-    pub fn warp_points_py<'py>(
-        &'py self,
-        py: Python<'py>,
-        points: &PyArray2<f32>,
-    ) -> &PyArray2<f32> {
-        self.warp_points(&points.to_owned_array()).to_pyarray(py)
-    }
-
-    /// Get location of corners of an image of shape `size` once warped with `self`.
-    #[pyo3(
-        name = "corners",
-        text_signature = "(self, size: (int, int)) -> np.ndarray"
-    )]
-    pub fn corners_py<'py>(&'py self, py: Python<'py>, size: (usize, usize)) -> &PyArray2<f32> {
-        self.corners(size).to_pyarray(py)
-    }
-
-    /// Equivalent to getting minimum and maximum x/y coordinates of `corners`.
-    /// Returns (min x, min y), (max x, max y)
-    #[pyo3(
-        name = "extent",
-        text_signature = "(self, size: (int, int)) -> (np.ndarray, np.ndarray)"
-    )]
-    pub fn extent_py<'py>(
-        &'py self,
-        py: Python<'py>,
-        size: (usize, usize),
-    ) -> (&PyArray1<f32>, &PyArray1<f32>) {
-        let (min, max) = self.extent(size);
-        (min.to_pyarray(py), max.to_pyarray(py))
-    }
-
-    /// Warp array using mapping into a new buffer of shape `out_size`.
-    /// This returns the new buffer along with a mask of which pixels were warped.
-    #[pyo3(
-        name = "warp_array",
-        text_signature = "(self, data: np.ndarray, out_size: (int, int), \
-        background: Optional[List[float]]) -> (np.ndarray, np.ndarray)"
-    )]
-    pub fn warp_array3_py<'py>(
-        &'py self,
-        py: Python<'py>,
-        data: &PyArray3<f32>,
-        out_size: (usize, usize),
-        background: Option<Vec<f32>>,
-    ) -> (&PyArray3<f32>, &PyArray2<bool>) {
-        let (out, valid) = self.warp_array3(
-            unsafe { &data.as_array() },
-            out_size,
-            background.map(Array1::from_vec),
-        );
-        (out.to_pyarray(py), valid.to_pyarray(py))
-    }
-
-    #[getter(mat)]
-    pub fn mat_getter<'py>(&'py self, py: Python<'py>) -> Result<Py<PyAny>> {
-        // See: https://github.com/PyO3/rust-numpy/issues/408
-        let py_arr = self.mat.to_pyarray(py).to_owned().into_py(py);
-        py_arr
-            .getattr(py, "setflags")?
-            .call1(py, (false, None::<bool>, None::<bool>))?;
-        Ok(py_arr)
-    }
-
-    #[setter(mat)]
-    pub fn mat_setter(&mut self, arr: &PyArray2<f32>) -> Result<()> {
-        self.mat = arr.to_owned_array();
-        Ok(())
-    }
-
-    #[getter(kind)]
-    pub fn kind_getter(&self) -> String {
-        self.kind.to_string()
-    }
-
-    #[setter(kind)]
-    pub fn kind_setter(&mut self, kind: &str) -> Result<()> {
-        self.kind = TransformationType::from_str(kind)?;
-        Ok(())
-    }
-
-    pub fn __str__(&self) -> Result<String> {
-        Ok(format!(
-            "Mapping(mat={:6.4}, kind=\"{}\")",
-            self.mat, self.kind
-        ))
-    }
 }
 
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 #[cfg(test)]
 mod test_warps {
-    use approx::assert_relative_eq;
+    use burn::backend::wgpu::{AutoGraphicsApi, WgpuRuntime};
     use ndarray::{array, Array2};
 
-    use crate::warps::{Mapping, TransformationType};
+    use crate::{
+        transforms::array2_to_tensor2,
+        warps::{Mapping, TransformationType},
+    };
 
     #[test]
     fn test_warp_points() {
-        let map = Mapping::from_matrix(
+        type MyBackend = burn::backend::wgpu::JitBackend<WgpuRuntime<AutoGraphicsApi, f32, i32>>;
+        let device = Default::default();
+
+        let map = Mapping::<MyBackend>::from_matrix(
             array![
                 [1.13411823, 4.38092511, 9.315785],
                 [1.37351153, 5.27648111, 1.60252762],
@@ -809,18 +499,22 @@ mod test_warps {
             ],
             TransformationType::Projective,
         );
-        let point = array![[0, 0]];
-        let warpd = map.warp_points(&point);
-        assert_relative_eq!(warpd, array![[3.56534624, 0.61332092]]);
+        let point = array2_to_tensor2(array![[0.0, 0.0]], &device);
+        let warpd = map.warp_points(point);
+        array2_to_tensor2::<f32, MyBackend>(array![[3.56534624, 0.61332092]], &device)
+            .into_data()
+            .assert_approx_eq(&warpd.into_data(), 3);
     }
 
     #[test]
     fn test_updowngrade() {
-        let map = Mapping::from_matrix(Array2::eye(3), TransformationType::Unknown);
+        type MyBackend = burn::backend::wgpu::JitBackend<WgpuRuntime<AutoGraphicsApi, f32, i32>>;
+
+        let map = Mapping::<MyBackend>::from_matrix(Array2::eye(3), TransformationType::Unknown);
         assert!(map.upgrade().kind == TransformationType::Unknown);
         assert!(map.downgrade().kind == TransformationType::Unknown);
 
-        let mut map = Mapping::identity();
+        let mut map = Mapping::<MyBackend>::identity();
         assert!(map.kind == TransformationType::Identity);
 
         map = map.upgrade();

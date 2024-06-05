@@ -1,6 +1,8 @@
 use burn_tensor::{Shape, Tensor};
 use image::{ImageBuffer, Pixel};
 use imageproc::definitions::Clamp;
+use ndarray::Array2;
+use num_traits::ToPrimitive;
 
 use crate::kernel::Backend;
 
@@ -42,4 +44,33 @@ where
         &device,
     )
     .reshape(shape)
+}
+
+pub fn array2_to_tensor2<T, B: Backend>(arr: Array2<T>, device: &B::Device) -> Tensor<B, 2>
+where
+    f32: From<T>,
+{
+    // TODO: This is likely suboptimal
+    assert!(arr.is_standard_layout());
+    let shape = Shape::new(arr.dim().into());
+    Tensor::<B, 1>::from_floats(
+        &arr.into_raw_vec()
+            .into_iter()
+            .map(|i| i.into())
+            .collect::<Vec<_>>()[..],
+        &device,
+    )
+    .reshape(shape)
+}
+
+pub fn tensor2_to_array2<B: Backend>(tensor: Tensor<B, 2>) -> Array2<f32> {
+    let vals: Vec<f32> = tensor
+        .to_data()
+        .value
+        .into_iter()
+        .map(|i| i.to_f32().unwrap())
+        .collect();
+
+    Array2::from_shape_vec(tensor.shape().dims, vals)
+        .expect("Tensor should be converted to Array of same shape.")
 }

@@ -1,6 +1,17 @@
 use std::collections::{HashMap, VecDeque};
 
 use anyhow::{anyhow, Result};
+use burn::{
+    module::{Param, ParamId},
+    nn::{
+        conv::{Conv2d, Conv2dConfig},
+        Initializer,
+    },
+};
+use burn_tensor::{
+    ops::{IntTensor, IntTensorOps},
+    Int, Shape, Tensor,
+};
 use conv::{ValueFrom, ValueInto};
 use image::{
     imageops::{colorops::grayscale, resize, FilterType},
@@ -18,6 +29,7 @@ use photoncube2video::transforms::{grayimage_to_array2, ref_image_to_array3};
 use rayon::prelude::*;
 
 use crate::{
+    kernel::Backend,
     utils::get_pbar,
     warps::{Mapping, TransformationType},
 };
@@ -34,6 +46,30 @@ where
         grayimage_to_array2(filter3x3(img, &VERTICAL_SCHARR.map(|v| v as f32))),
     )
 }
+
+// /// Compute image gradients using Scharr operator
+// /// Returned (dx, dy) pair as HxW arrays.
+// pub fn tensor_gradients<B>(img: Tensor<B, 3>) -> Tensor<B, 3>
+// where
+//     B: Backend,
+// {
+//     // TODO: Input is HWC, needs to be 1CHW for conv to work.
+//     // Tensor of shape `[channels_out, channels_in / groups, kernel_size_1, kernel_size_2]`
+//     let config = Conv2dConfig::new([2, 3], [3, 3]).with_initializer(Initializer::Zeros);
+//     let device = Default::default();
+//     let mut conv = config.init::<B>(&device);
+//     let horizontal = Tensor::<B, 1, Int>::from_ints(HORIZONTAL_SCHARR, &device)
+//         .reshape(Shape::new([1, 3, 3]))
+//         .float();
+//     let vertical = Tensor::<B, 1, Int>::from_ints(VERTICAL_SCHARR, &device)
+//         .reshape(Shape::new([1, 3, 3]))
+//         .float();
+
+//     let weights = Tensor::stack(vec![horizontal, vertical], 0)
+//         .repeat(1, 3);
+//     conv.weight = Param::initialized(ParamId::new(), weights);
+//     conv.forward(img)
+// }
 
 /// Estimate the warp that maps `img2` to `img1` using the Inverse Compositional Lucas-Kanade algorithm.
 /// In other words, img2 is the template and img1 is the static image.
