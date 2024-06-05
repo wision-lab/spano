@@ -2,7 +2,7 @@
 
 // pub mod blend;
 // pub mod cli;
-pub mod kernel;
+pub mod kernels;
 // pub mod lk;
 // pub mod scripts;
 pub mod transforms;

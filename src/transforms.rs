@@ -4,7 +4,7 @@ use imageproc::definitions::Clamp;
 use ndarray::Array2;
 use num_traits::ToPrimitive;
 
-use crate::kernel::Backend;
+use crate::kernels::Backend;
 
 pub fn tensor3_to_image<P, B>(tensor: Tensor<B, 3>) -> ImageBuffer<P, Vec<P::Subpixel>>
 where

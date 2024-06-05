@@ -7,7 +7,7 @@ use std::{
 use anyhow::Result;
 use conv::ValueInto;
 use image::{
-    imageops::{resize, FilterType}, io::Reader as ImageReader, EncodableLayout, ImageBuffer, Pixel, PixelWithColorType, Primitive, Rgb
+    imageops::{resize, FilterType}, io::Reader as ImageReader, EncodableLayout, Pixel, PixelWithColorType, Primitive, Rgb
 };
 use imageproc::definitions::{Clamp, Image};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -18,7 +18,7 @@ use photoncube2video::{
 };
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 
-use crate::{kernel::Backend, warps::Mapping};
+use crate::{kernels::Backend, warps::Mapping};
 
 /// Conditionally setup a progressbar
 pub fn get_pbar(len: usize, message: Option<&str>) -> ProgressBar {

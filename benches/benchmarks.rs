@@ -16,7 +16,7 @@ use photoncube2video::transforms::image_to_array3;
 use pprof::criterion::{Output, PProfProfiler};
 use spano::{
     // blend::{distance_transform, merge_images},
-    kernel::Backend,
+    kernels::Backend,
     // lk::iclk,
     // warps::{Mapping, TransformationType},
 };

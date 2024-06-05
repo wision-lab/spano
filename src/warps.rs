@@ -8,12 +8,11 @@ use itertools::chain;
 use ndarray::{array, Array, Array1, Array2, Axis};
 use ndarray_interp::interp1d::{CubicSpline, Interp1DBuilder, Linear};
 use ndarray_linalg::solve::Inverse;
-use num_traits::ToPrimitive;
 use strum::{EnumCount, VariantArray};
 use strum_macros::{Display, EnumString};
 
 use crate::{
-    kernel::Backend,
+    kernels::Backend,
     transforms::{array2_to_tensor2, image_to_tensor3, tensor2_to_array2, tensor3_to_image},
 };
 
