@@ -7,9 +7,7 @@ use std::{
 use anyhow::Result;
 use conv::ValueInto;
 use image::{
-    imageops::{resize, FilterType},
-    io::Reader as ImageReader,
-    EncodableLayout, Pixel, PixelWithColorType, Primitive, Rgb,
+    imageops::{resize, FilterType}, io::Reader as ImageReader, EncodableLayout, ImageBuffer, Pixel, PixelWithColorType, Primitive, Rgb
 };
 use imageproc::definitions::{Clamp, Image};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -20,7 +18,7 @@ use photoncube2video::{
 };
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 
-use crate::warps::Mapping;
+use crate::{kernel::Backend, warps::Mapping};
 
 /// Conditionally setup a progressbar
 pub fn get_pbar(len: usize, message: Option<&str>) -> ProgressBar {
@@ -39,7 +37,7 @@ pub fn get_pbar(len: usize, message: Option<&str>) -> ProgressBar {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn animate_warp(
+pub fn animate_warp<B: Backend>(
     img_path: &str,
     params_history: Vec<Vec<f32>>,
     img_dir: &str,
@@ -65,7 +63,7 @@ pub fn animate_warp(
         .step_by(step.unwrap_or(100))
         .enumerate()
         .for_each(|(i, params)| {
-            let out = Mapping::from_params(params)
+            let out = Mapping::<B>::from_params(params)
                 .inverse()
                 .rescale(1.0 / scale)
                 .warp_image(&img, (h as usize, w as usize), Some(Rgb([128, 128, 128])));
@@ -90,7 +88,7 @@ pub fn animate_warp(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn animate_hierarchical_warp(
+pub fn animate_hierarchical_warp<B: Backend>(
     img_path: &str,
     all_params_history: HashMap<u32, Vec<Vec<f32>>>,
     global_scale: f32,
@@ -136,7 +134,7 @@ pub fn animate_hierarchical_warp(
             .step_by(step.unwrap_or(100))
             .enumerate()
             .map(|(i, params)| {
-                let mut out = Mapping::from_params(params)
+                let mut out = Mapping::<B>::from_params(params)
                     .inverse()
                     .rescale(1.0 / scale)
                     .warp_image(
@@ -171,8 +169,8 @@ pub fn animate_hierarchical_warp(
     Ok(())
 }
 
-pub fn stabilized_video<P>(
-    mappings: &[Mapping],
+pub fn stabilized_video<P, B>(
+    mappings: &[Mapping<B>],
     frames: &[Image<P>],
     img_dir: &str,
     fps: Option<u64>,
@@ -186,6 +184,7 @@ where
         num_traits::Zero + Clone + Copy + ValueInto<f32> + Send + Sync + Clamp<f32>,
     [<P as Pixel>::Subpixel]: EncodableLayout,
     f32: From<<P as Pixel>::Subpixel>,
+    B: Backend
 {
     // Clear dir, and make sure it exists
     if Path::new(&img_dir).is_dir() {
@@ -199,7 +198,7 @@ where
         .unique()
         .collect();
     let (extent, offset) = Mapping::maximum_extent(mappings, &sizes[..]);
-    let [canvas_w, canvas_h] = extent.to_vec()[..] else {
+    let [canvas_w, canvas_h]: [f32] = extent.into_data().convert().value[..] else {
         unreachable!("Canvas should have width and height")
     };
     let pbar = get_pbar(frames.len() / step.unwrap_or(100), message);

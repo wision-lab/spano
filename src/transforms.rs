@@ -10,14 +10,16 @@ pub fn tensor3_to_image<P, B>(tensor: Tensor<B, 3>) -> ImageBuffer<P, Vec<P::Sub
 where
     B: Backend,
     P: Pixel,
-    <P as Pixel>::Subpixel: Clamp<<B as burn::prelude::Backend>::FloatElem>,
+    <P as Pixel>::Subpixel: Clamp<f32>,
 {
     let [height, width, _] = tensor.shape().dims;
     let values = tensor
         .to_data()
         .value
         .into_iter()
-        .map(|a| <P as Pixel>::Subpixel::clamp(a))
+        .map(|a| {
+            <P as Pixel>::Subpixel::clamp(a.to_f32().expect("FloatElement should cast to f32"))
+        })
         .collect();
 
     ImageBuffer::<P, Vec<P::Subpixel>>::from_raw(width as u32, height as u32, values)
@@ -64,12 +66,7 @@ where
 }
 
 pub fn tensor2_to_array2<B: Backend>(tensor: Tensor<B, 2>) -> Array2<f32> {
-    let vals: Vec<f32> = tensor
-        .to_data()
-        .value
-        .into_iter()
-        .map(|i| i.to_f32().unwrap())
-        .collect();
+    let vals: Vec<f32> = tensor.to_data().convert().value;
 
     Array2::from_shape_vec(tensor.shape().dims, vals)
         .expect("Tensor should be converted to Array of same shape.")

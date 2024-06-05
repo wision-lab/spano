@@ -6,8 +6,8 @@ pub mod kernel;
 // pub mod lk;
 // pub mod scripts;
 pub mod transforms;
-// pub mod transpose;
-// pub mod utils;
+pub mod transpose;
+pub mod utils;
 pub mod warps;
 
 // use pyo3::prelude::*;

@@ -48,6 +48,14 @@ pub struct Mapping<B: Backend> {
     pub kind: TransformationType,
 }
 
+// These are synchronization primitives used when multithreading.
+// We have to define them for our type as they are not automatically derived.
+// Without this, we'd have unnecessary trait bounds that specify that 
+// Mapping::mat is Send+Sync such as:
+//     <B as burn::prelude::Backend>::FloatTensorPrimitive<2>: Sync
+unsafe impl<B: Backend> Sync for Mapping<B> {}
+unsafe impl<B: Backend> Send for Mapping<B> {}
+
 // Note: Methods in this `impl` block are _not_ exposed to python
 impl<B: Backend> Mapping<B> {
     pub fn from_tensor(mat: Tensor<B, 2>, kind: TransformationType) -> Self {
@@ -72,7 +80,6 @@ impl<B: Backend> Mapping<B> {
             return points;
         }
 
-        println!("{:?}", points.clone().to_data());
         let num_points = points.shape().dims[0];
         let ones = Tensor::ones(Shape::new([num_points, 1]), &self.device());
         let points = Tensor::cat(vec![points, ones], 1);
@@ -132,14 +139,7 @@ impl<B: Backend> Mapping<B> {
         let max_coords: Tensor<B, 1> = Tensor::stack::<2>(max_coords, 0).min_dim(0).squeeze(0);
 
         let extent = max_coords - min_coords.clone();
-        let offset = Mapping::from_params(
-            min_coords
-                .to_data()
-                .value
-                .into_iter()
-                .map(|i| i.to_f32().expect("FloatElement should cast to f32"))
-                .collect::<Vec<_>>(),
-        );
+        let offset = Mapping::from_params(min_coords.to_data().convert().value);
         (extent, offset)
     }
 
@@ -152,7 +152,7 @@ impl<B: Backend> Mapping<B> {
     where
         P: Pixel,
         f32: From<<P as Pixel>::Subpixel>,
-        <P as Pixel>::Subpixel: Clamp<<B as burn::prelude::Backend>::FloatElem>,
+        <P as Pixel>::Subpixel: Clamp<f32>,
     {
         let background =
             background.map(|v| v.channels().into_iter().map(|i| f32::from(*i)).collect());
