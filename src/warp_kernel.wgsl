@@ -67,7 +67,6 @@ fn main(
     // Basic information
     let src_rows = input_shape_handle[0];
     let src_cols = input_shape_handle[1];
-    let src_channels = input_shape_handle[2];
     let dst_rows = output_shape_handle[0];
     let dst_cols = output_shape_handle[1];
     let dst_channels = output_shape_handle[2];

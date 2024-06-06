@@ -7,7 +7,9 @@ use std::{
 use anyhow::Result;
 use conv::ValueInto;
 use image::{
-    imageops::{resize, FilterType}, io::Reader as ImageReader, EncodableLayout, Pixel, PixelWithColorType, Primitive, Rgb
+    imageops::{resize, FilterType},
+    io::Reader as ImageReader,
+    EncodableLayout, Pixel, PixelWithColorType, Primitive, Rgb,
 };
 use imageproc::definitions::{Clamp, Image};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -184,7 +186,7 @@ where
         num_traits::Zero + Clone + Copy + ValueInto<f32> + Send + Sync + Clamp<f32>,
     [<P as Pixel>::Subpixel]: EncodableLayout,
     f32: From<<P as Pixel>::Subpixel>,
-    B: Backend
+    B: Backend,
 {
     // Clear dir, and make sure it exists
     if Path::new(&img_dir).is_dir() {

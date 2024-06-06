@@ -12,7 +12,7 @@ where
     P: Pixel,
     <P as Pixel>::Subpixel: Clamp<f32>,
 {
-    let [height, width, _] = tensor.shape().dims;
+    let [height, width, _] = tensor.dims();
     let values = tensor
         .to_data()
         .value
@@ -68,6 +68,6 @@ where
 pub fn tensor2_to_array2<B: Backend>(tensor: Tensor<B, 2>) -> Array2<f32> {
     let vals: Vec<f32> = tensor.to_data().convert().value;
 
-    Array2::from_shape_vec(tensor.shape().dims, vals)
+    Array2::from_shape_vec(tensor.dims(), vals)
         .expect("Tensor should be converted to Array of same shape.")
 }

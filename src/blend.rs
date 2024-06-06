@@ -1,208 +1,138 @@
+use std::hash::Hash;
+
 use anyhow::{anyhow, Result};
-use cached::proc_macro::cached;
+use burn_tensor::{Shape, Tensor};
 use image::Pixel;
 use imageproc::definitions::{Clamp, Image};
 use itertools::Itertools;
-use ndarray::{
-    azip, concatenate, s, stack, Array, Array1, Array2, Array3, ArrayBase, Axis, Ix3, NewAxis,
-    RawData,
-};
-use photoncube2video::transforms::{array3_to_image, ref_image_to_array3};
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-use crate::warps::Mapping;
+use num_traits::ToPrimitive;
+
+use crate::{kernels::Backend, transforms::{image_to_tensor3, tensor3_to_image}, warps::Mapping};
 
 /// Computes normalized and clipped distance transform (bwdist) for rectangle that fills image.
-#[cached(sync_writes = true)]
-pub fn distance_transform(size: (usize, usize)) -> Array2<f32> {
-    let (w, h) = size;
+// #[cached(sync_writes = true)]
+pub fn distance_transform<B: Backend, const D: usize>(
+    shape: Shape<D>,
+    device: &B::Device,
+) -> Tensor<B, 3> {
+    // Assume shape is HW*
+    let [h, w] = shape.dims[..2] else {
+        panic!("Shape should have at least two dimensions.")
+    };
     let corners = [
         (0.0, 0.0),
         (w as f32, 0.0),
         (w as f32, h as f32),
         (0.0, h as f32),
     ];
-    let dist = |q| {
+    let num_points = (w as i64) * (h as i64);
+    let points: Tensor<B, 2> = Tensor::stack(
+        vec![
+            // Tensor::cat(vec![Tensor::arange(0..(w as i64), device); h], 0), // ~80ms
+            // Tensor::from_floats(&(0..num_points).map(|i| (i as f32) % (w as f32)).collect::<Vec<_>>()[..], device), // ~ 18ms
+            Tensor::arange(0..(w as i64), device)
+                .reshape(Shape::new([1, w]))
+                .repeat(0, h)
+                .flatten(0, 1)
+                .float(), // ~10ms
+            Tensor::arange(0..num_points, device)
+                .div_scalar(w as u32)
+                .float(),
+        ],
+        1,
+    );
+    let dist = |q: Tensor<B, 2>| {
         corners
             .iter()
             .circular_tuple_windows()
-            .map(|(p1, p2)| distance_to_line(*p1, *p2, q))
-            .fold(f32::INFINITY, |a, b| a.min(b))
+            .map(|(p1, p2)| distance_to_line(*p1, *p2, q.clone()))
+            .fold(
+                Tensor::full(Shape::new([h * w, 1]), f32::INFINITY, device),
+                |a, b| a.min_pair(b),
+            )
     };
-    let max_dist = dist((w as f32 / 2.0, h as f32 / 2.0));
-
-    Array::from_shape_fn((h, w), |(i, j)| dist((j as f32, i as f32)) / max_dist)
+    dist(points).reshape(Shape::new([h, w, 1]))
 }
 
 /// Find distance to line defined by two points
 /// See: https://en.wikipedia.org/wiki/Distance_from_a_point_to_a_line
-pub fn distance_to_line(p1: (f32, f32), p2: (f32, f32), query: (f32, f32)) -> f32 {
+pub fn distance_to_line<B: Backend>(
+    p1: (f32, f32),
+    p2: (f32, f32),
+    query: Tensor<B, 2>,
+) -> Tensor<B, 2> {
     let (x1, y1) = p1;
     let (x2, y2) = p2;
-    let (x0, y0) = query;
 
-    ((x2 - x1) * (y1 - y0) - (x1 - x0) * (y2 - y1)).abs()
-        / ((x2 - x1).powf(2.0) + (y2 - y1).powf(2.0)).sqrt()
-}
+    let num_points = query.dims()[0];
+    let x0 = query.clone().slice([0..num_points, 0..1]);
+    let y0 = query.clone().slice([0..num_points, 1..2]);
 
-/// Computes normalized and clipped distance transform (bwdist) for arbitray polygon.
-/// The MATLAB version of this uses a different algorithm, which is much faster but less general.
-/// Here, we simply cache the result instead.
-///
-/// To get the belnding mask for an image of a given `size` you can:
-///     polygon_distance_transform(&Mapping::identity().corners(size), size)
-///
-/// Reference of matlab algorithm:
-///     Breu, Heinz, Joseph Gil, David Kirkpatrick, and Michael Werman, "Linear Time Euclidean
-///     Distance Transform Algorithms," IEEE Transactions on Pattern Analysis and Machine
-///     Intelligence, Vol. 17, No. 5, May 1995, pp. 529-533.
-pub fn polygon_distance_transform(corners: &Array2<f32>, size: (usize, usize)) -> Array2<f32> {
-    // Points is a Nx2 array of xy pairs
-    let (width, height) = size;
-    let points = Array::from_shape_fn((width * height, 2), |(i, j)| {
-        if j == 0 {
-            (i % width) as f32
-        } else {
-            (i / width) as f32
-        }
-    });
-    let mut weights = -polygon_sdf(&points, corners);
-    let max = weights.fold(-f32::INFINITY, |a, b| a.max(*b));
-    weights.mapv_inplace(|v| v / max);
-    weights.into_shape((height, width)).unwrap()
-}
-
-/// Akin to the distance transform used by opencv or bwdist in MATLB but much more general.
-pub fn polygon_sdf(points: &Array2<f32>, vertices: &Array2<f32>) -> Array1<f32> {
-    // Adapted from: https://www.shadertoy.com/view/wdBXRW
-
-    let num_points = points.shape()[0];
-    let num_vertices = vertices.shape()[0];
-
-    let mut d: Array1<f32> = (points - vertices.slice(s![0, ..]).to_owned())
-        .mapv(|v| v * v)
-        .sum_axis(Axis(1));
-    let mut s = Array1::<f32>::ones(num_points);
-
-    for i in 0..num_vertices {
-        // distances
-        let j = if i == 0 { num_vertices - 1 } else { i - 1 };
-        let e = vertices.slice(s![j, ..]).to_owned() - vertices.slice(s![i, ..]).to_owned();
-        let w = points - vertices.slice(s![i, ..]).to_owned();
-
-        let mut weights = (&w * &e).sum_axis(Axis(1)) / (e.dot(&e));
-        weights.mapv_inplace(|v| v.clamp(0.0, 1.0));
-
-        let ew = stack![Axis(0), &weights * e[0], &weights * e[1]];
-        let b = &w - &ew.t();
-        azip!((di in &mut d, bi in b.rows()) *di = di.min(bi.dot(&bi)));
-
-        // winding number from http://geomalgorithms.com/a03-_inclusion.html
-        let cond = Array1::from_vec(
-            (
-                points
-                    .slice(s![.., 1])
-                    .mapv(|v| v >= vertices[(i, 1)])
-                    .to_vec(),
-                points
-                    .slice(s![.., 1])
-                    .mapv(|v| v < vertices[(j, 1)])
-                    .to_vec(),
-                (
-                    (&e.slice(s![0]).to_owned() * &w.slice(s![.., 1]).to_owned()).to_vec(),
-                    (&e.slice(s![1]).to_owned() * &w.slice(s![.., 0]).to_owned()).to_vec(),
-                )
-                    .into_par_iter()
-                    .map(|(a, b)| a > b)
-                    .collect::<Vec<_>>(),
-            )
-                .into_par_iter()
-                .map(|(c1, c2, c3)| (!c1 & !c2 & !c3) | (c1 & c2 & c3))
-                .collect(),
-        );
-        azip!((si in &mut s, ci in &cond) *si = if *ci {-*si} else {*si});
-    }
-
-    s * d.mapv(|v| v.sqrt())
+    let out = ((-y0 + y1) * (x2 - x1) - (-x0 + x1) * (y2 - y1)).abs();
+    out / ((x2 - x1).powf(2.0) + (y2 - y1).powf(2.0)).sqrt()
 }
 
 /// Merge frames using simple linear blending
 /// If size (height, width) is specified, that will be used as the canvas size,
 /// otherwise, find smallest canvas size that fits all warps.
-pub fn merge_arrays<S>(
-    mappings: &[Mapping],
-    frames: &[ArrayBase<S, Ix3>],
+pub fn blend_tensors3<B: Backend>(
+    mappings: &[Mapping<B>],
+    inputs: &[Tensor<B, 3>],
     size: Option<(usize, usize)>,
-) -> Result<Array3<f32>>
+) -> Result<Tensor<B, 3>>
 where
-    S: RawData<Elem = f32> + ndarray::Data,
+    B::Device: Eq + Hash,
 {
-    let [frame_size] = frames
+    // Validate input shapes
+    let [frame_size] = inputs
         .iter()
-        .map(|f| f.dim())
+        .map(|f| f.dims())
         .unique()
-        .collect::<Vec<(usize, usize, usize)>>()[..]
+        .collect::<Vec<[usize; 3]>>()[..]
     else {
         return Err(anyhow!("All frames must have same size."));
     };
-    let (h, w, c) = frame_size;
+    let [h, w, c] = frame_size;
+
+    // Validate devices
+    let unique_devices: Vec<B::Device> = mappings
+        .iter()
+        .map(|m| m.device())
+        .chain(inputs.iter().map(|i| i.device()))
+        .unique()
+        .collect();
+    if unique_devices.len() != 1 {
+        return Err(anyhow!("All tensors should be on the same device"));
+    }
+    let device = &unique_devices[0];
 
     let ((canvas_h, canvas_w), offset) = if let Some(val) = size {
-        (val, Mapping::identity())
+        (val, Mapping::identity().to_device(device))
     } else {
         let (extent, offset) = Mapping::maximum_extent(mappings, &[(w, h)]);
         let (canvas_w, canvas_h) = extent
+            .to_data()
+            .value
             .iter()
+            .map(|i| i.to_f32().unwrap())
             .collect_tuple()
             .expect("Canvas should have width and height");
         ((canvas_h.ceil() as usize, canvas_w.ceil() as usize), offset)
     };
+    let shifted_mappings: Vec<_> = mappings.iter().map(|m| m.transform(None, Some(offset.clone()))).collect();
 
-    let mut canvas: Array3<f32> = Array3::zeros((canvas_h, canvas_w, (c + 1)));
-    let mut valid: Array2<bool> = Array2::from_elem((canvas_h, canvas_w), false);
-    let weights = distance_transform((w, h));
-    let weights = weights.slice(s![.., .., NewAxis]);
-    let merge = |dst: &mut [f32], src: &[f32]| {
-        // Redefine c because otherwise we capture outside scope and stuf breaks, not sure why.
-        let c = src.len() - 1;
-
-        // Multiply pixel value with blend coefficient and add it to running sum
-        for i in 0..c {
-            dst[i] += src[i] * src[c];
-        }
-        // Also keep track of total blending weight
-        dst[c] += src[c];
-    };
-
-    // Points is a Nx2 array of xy pairs
-    let points = Array::from_shape_fn((canvas_h * canvas_w, 2), |(i, j)| {
-        if j == 0 {
-            i % canvas_w
-        } else {
-            i / canvas_w
-        }
-    });
-
-    for (frame, map) in frames.iter().zip(mappings) {
-        let frame = concatenate(Axis(2), &[frame.view(), weights.view()])?;
-        map.transform(None, Some(offset.clone()))
-            .warp_array3_into::<f32, _, _, _, _, _>(
-                &frame.as_standard_layout(),
-                &mut canvas,
-                &mut valid,
-                &points,
-                None,
-                Some(merge),
-            );
-    }
-
-    let canvas = canvas.slice(s![.., .., ..c]).to_owned() / canvas.slice(s![.., .., -1..]);
-    Ok(canvas)
+    let mut output = B::float_zeros(Shape::new([canvas_h, canvas_w, c + 1]), device);
+    let weights = distance_transform::<B, 3>(Shape::new(frame_size), device);
+    B::blend_into_tensor3(&shifted_mappings[..], inputs, weights, &mut output);
+    let canvas = Tensor::from_primitive(output);
+    let merged = canvas.clone().slice([0..canvas_h, 0..canvas_w, 0..c]) / canvas.slice([0..canvas_h, 0..canvas_w, c..c+1]);
+    Ok(merged)
 }
 
-/// Wrapper for `merge_arrays` that converts to/from images.
-pub fn merge_images<P>(
-    mappings: &[Mapping],
+/// Wrapper for `blend_tensors3` that converts to/from images.
+pub fn blend_images<P, B>(
+    mappings: &[Mapping<B>],
     frames: &[Image<P>],
     size: Option<(usize, usize)>,
 ) -> Result<Image<P>>
@@ -210,11 +140,13 @@ where
     P: Pixel + Send + Sync,
     f32: From<<P as Pixel>::Subpixel>,
     <P as Pixel>::Subpixel: Clamp<f32>,
+    B::Device: Eq + Hash,
+    B: Backend
 {
     let frames: Vec<_> = frames
         .iter()
-        .map(|f| ref_image_to_array3(f).mapv(f32::from))
+        .map(|f| image_to_tensor3(f.clone(), &mappings[0].device()))
         .collect();
-    let merged = merge_arrays(mappings, &frames[..], size.map(|(w, h)| (h, w)))?;
-    Ok(array3_to_image(merged.mapv(<P as Pixel>::Subpixel::clamp)))
+    let merged = blend_tensors3(mappings, &frames[..], size.map(|(w, h)| (h, w)))?;
+    Ok(tensor3_to_image(merged))
 }

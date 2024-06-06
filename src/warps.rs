@@ -49,7 +49,7 @@ pub struct Mapping<B: Backend> {
 
 // These are synchronization primitives used when multithreading.
 // We have to define them for our type as they are not automatically derived.
-// Without this, we'd have unnecessary trait bounds that specify that 
+// Without this, we'd have unnecessary trait bounds that specify that
 // Mapping::mat is Send+Sync such as:
 //     <B as burn::prelude::Backend>::FloatTensorPrimitive<2>: Sync
 unsafe impl<B: Backend> Sync for Mapping<B> {}
@@ -73,13 +73,17 @@ impl<B: Backend> Mapping<B> {
         self.mat.device()
     }
 
+    pub fn to_device(&self, device: &B::Device) -> Self {
+        Self {mat: self.mat.clone().to_device(device), kind: self.kind}
+    }
+
     /// Warp a set of Nx2 points using the mapping.
     pub fn warp_points(&self, points: Tensor<B, 2>) -> Tensor<B, 2> {
         if self.kind == TransformationType::Identity {
             return points;
         }
 
-        let num_points = points.shape().dims[0];
+        let num_points = points.dims()[0];
         let ones = Tensor::ones(Shape::new([num_points, 1]), &self.device());
         let points = Tensor::cat(vec![points, ones], 1);
 
@@ -156,7 +160,7 @@ impl<B: Backend> Mapping<B> {
         let background =
             background.map(|v| v.channels().into_iter().map(|i| f32::from(*i)).collect());
         let img_src = image_to_tensor3::<P, B>(data.clone(), &self.device());
-        let (img_warped, _) = self.warp_tensor3(img_src.into_primitive(), out_size, background);
+        let (img_warped, _) = self.warp_tensor3(img_src, out_size, background);
         tensor3_to_image::<P, B>(Tensor::from_primitive(img_warped))
     }
 
@@ -164,13 +168,13 @@ impl<B: Backend> Mapping<B> {
     /// This returns the new buffer along with a mask of which pixels were warped.
     pub fn warp_tensor3(
         &self,
-        data: FloatTensor<B, 3>,
+        data: Tensor<B, 3>,
         out_size: (usize, usize),
         background: Option<Vec<f32>>,
     ) -> (FloatTensor<B, 3>, BoolTensor<B, 2>) {
         let (h, w) = out_size;
-        let [_, _, c] = B::float_shape(&data).dims;
-        let device = &B::float_device(&data);
+        let [_, _, c] = data.dims();
+        let device = &data.device();
         let mut out = B::float_zeros(Shape::new([h, w, c]), &device);
         let mut valid = B::bool_empty(Shape::new([h, w]), &device);
 
@@ -193,13 +197,13 @@ impl<B: Backend> Mapping<B> {
     ///     background: If provided, interpolate between this color and data when sample is near border.
     pub fn warp_tensor3_into(
         &self,
-        data: FloatTensor<B, 3>,
+        data: Tensor<B, 3>,
         out: &mut FloatTensor<B, 3>,
         valid: &mut BoolTensor<B, 2>,
         background: Option<Vec<f32>>,
     ) {
         let bkg = background.unwrap_or(vec![0.0, 0.0, 0.0]);
-        B::warp_into_tensor3(self.mat.clone().into_primitive(), data, out, valid, bkg);
+        B::warp_into_tensor3(self.clone(), data, out, valid, bkg);
     }
 
     /// Given a list of transform parameters, return the Mapping that would transform a

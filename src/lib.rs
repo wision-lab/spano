@@ -1,6 +1,6 @@
 #![warn(unused_extern_crates)]
 
-// pub mod blend;
+pub mod blend;
 // pub mod cli;
 pub mod kernels;
 // pub mod lk;
