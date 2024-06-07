@@ -14,7 +14,7 @@ use image::{
 use imageproc::{
     definitions::{Clamp, Image},
     filter::filter3x3,
-    gradients::{HORIZONTAL_SCHARR, VERTICAL_SCHARR},
+    gradients::{HORIZONTAL_SCHARR, VERTICAL_SCHARR, HORIZONTAL_SOBEL, VERTICAL_SOBEL},
 };
 use itertools::izip;
 use ndarray::Ix2;
@@ -32,7 +32,8 @@ use crate::{
 /// Compute image gradients using Scharr operator.
 /// Input is expected to be grayscale, HW1 format.
 /// Returned (dx, dy) pair as HxWx1 tensors.
-/// WARNING: These gradients might be the negative grad due to convolutions... TODO?
+/// 
+/// WARNING: Incorrect boundary conditions! It's padded with zeros, should be continuity.
 pub fn tensor_gradients_<B: Backend>(img: Tensor<B, 3>) -> (Tensor<B, 3>, Tensor<B, 3>) {
     // Input is HWC, needs to be 1CHW for conv to work.
     let [h, w, _] = img.dims();
@@ -66,11 +67,11 @@ pub fn tensor_gradients<B: Backend>(img: Tensor<B, 3>) -> (Tensor<B, 3>, Tensor<
     let img_ = tensor3_to_image::<Luma<f32>, B>(img.clone());
     (
         image_to_tensor3::<Luma<f32>, B>(
-            filter3x3(&img_, &HORIZONTAL_SCHARR.map(|v| v as f32)),
+            filter3x3(&img_, &HORIZONTAL_SOBEL.map(|v| v as f32)),
             &img.device(),
         ),
         image_to_tensor3::<Luma<f32>, B>(
-            filter3x3(&img_, &VERTICAL_SCHARR.map(|v| v as f32)),
+            filter3x3(&img_, &VERTICAL_SOBEL.map(|v| v as f32)),
             &img.device(),
         ),
     )
@@ -468,14 +469,16 @@ where
 /// Estimate pairwise registration using single level iclk
 #[allow(clippy::too_many_arguments)]
 pub fn pairwise_iclk<B: Backend>(
-    frames: &Vec<GrayImage>,
+    frames: &Vec<Tensor<B, 3>>,
     init_mappings: &[Mapping<B>],
     iterations: i32,
     early_stop: f32,
     patience: usize,
     message: Option<&str>,
-) -> Result<Vec<Mapping<B>>> {
-    let device = &init_mappings[0].device();
+) -> Result<Vec<Mapping<B>>> 
+where
+    Tensor<B, 3>: Sync
+{
     let pbar = get_pbar(frames.len() - 1, message);
 
     // Iterate over sliding window of pairwise frames (in parallel!)
@@ -485,8 +488,8 @@ pub fn pairwise_iclk<B: Backend>(
         .map(|(window, init_mapping)| {
             pbar.inc(1);
 
-            let im1 = image_to_tensor3(window[0].clone(), device);
-            let im2 = image_to_tensor3(window[1].clone(), device);
+            let im1 = window[0].clone();
+            let im2 = window[1].clone();
             let im2_grad = tensor_gradients(im2.clone());
 
             iclk_grayscale(

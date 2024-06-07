@@ -6,9 +6,7 @@ use std::{
 use anyhow::{anyhow, Result};
 use burn::backend::wgpu::{AutoGraphicsApi, WgpuRuntime};
 use image::{
-    imageops::{resize, FilterType},
-    io::Reader as ImageReader,
-    GrayImage, Rgb,
+    imageops::{resize, FilterType}, io::Reader as ImageReader, Luma, Rgb
 };
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use ndarray::{Array1, Axis, Slice};
@@ -16,7 +14,7 @@ use photoncube2video::{
     cube::PhotonCube,
     signals::DeferedSignal,
     transforms::{
-        apply_transforms, array2_to_grayimage, interpolate_where_mask, process_colorspad,
+        interpolate_where_mask, process_colorspad,
         unpack_single,
     },
 };
@@ -26,14 +24,15 @@ use rayon::{
     slice::ParallelSlice,
 };
 use tempfile::tempdir;
+use burn_tensor::{module::interpolate, ops::{InterpolateMode, InterpolateOptions}, Tensor};
 
 use crate::{
     // blend::merge_images,
-    blend::blend_images, cli::{Cli, Commands, LKArgs, Parser}, lk::{
+    blend::blend_tensors3, cli::{Cli, Commands, LKArgs, Parser}, lk::{
         hierarchical_iclk,
-        iclk, pairwise_iclk,
-        // pairwise_iclk
-    }, utils::{animate_hierarchical_warp, animate_warp, stabilized_video}, warps::Mapping
+        iclk,
+        pairwise_iclk,
+    }, transforms::{apply_tensor_transforms, array_to_tensor, tensor3_to_image}, utils::{animate_hierarchical_warp, animate_warp, stabilized_video}, warps::Mapping
 };
 
 type B = burn::backend::wgpu::JitBackend<WgpuRuntime<AutoGraphicsApi, f32, i32>>;
@@ -248,11 +247,13 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
 
             let num_ves = slice.len_of(Axis(0)) / pano_args.burst_size;
             let num_frames_per_chunk = pano_args.burst_size / pano_args.granularity;
-            let mut mappings: Vec<Mapping<B>> = vec![Mapping::from_params(vec![0.0; 2]); num_ves - 1];
+            let mut mappings: Vec<Mapping<B>> =
+                vec![Mapping::from_params(vec![0.0; 2]); num_ves - 1];
             let mut virtual_exposures: Vec<_> = vec![];
 
             // Preload all data at given granularity
-            let granular_frames: Vec<GrayImage> = slice.axis_chunks_iter(Axis(0), pano_args.granularity)
+            let device = &Default::default();
+            let granular_frames: Vec<Tensor<B, 3>> = slice.axis_chunks_iter(Axis(0), pano_args.granularity)
                 .into_par_iter()
                 .progress()
                 .with_style(
@@ -297,24 +298,23 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
                         frame = interpolate_where_mask(&frame, mask, false).unwrap();
                     }
 
-                    // Convert to img and apply transforms
-                    let mut img = array2_to_grayimage(
-                        frame.mapv(|v| (v * 255.0) as u8),
-                    );
+                    // Convert to tensor and apply transforms
+                    let mut img: Tensor<B, 2> = array_to_tensor(frame.into_dyn(), device) * 255.0;
 
                     if pano_args.lk_args.downscale != 1.0 {
-                        img = resize(
-                            &img,
-                            (w as f32 / pano_args.lk_args.downscale).round() as u32,
-                            (h as f32 / pano_args.lk_args.downscale).round() as u32,
-                            FilterType::CatmullRom,
-                        );
+                        img = interpolate(
+                            img.unsqueeze_dims(&[0, 0]),
+                            [
+                                (h as f32 / pano_args.lk_args.downscale).round() as usize,
+                                (w as f32 / pano_args.lk_args.downscale).round() as usize,
+                            ],
+                            InterpolateOptions::new(InterpolateMode::Bicubic)
+                        ).squeeze::<3>(0).squeeze::<2>(0);
                     }
-
-                    apply_transforms(img, &args.transform[..])
+                    apply_tensor_transforms(img, &args.transform[..]).unsqueeze_dim(2)
                 })
                 .collect();
-            let (w, h) = granular_frames[0].dimensions();
+            let [h, w, _] = granular_frames[0].dims();
 
             // -------------------- Main hiarchical matching process ----------------------------
             for lvl in (0..num_lvls).rev() {
@@ -344,18 +344,20 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
                     )
                     .with_message(format!("({}/{}): Resizing Data...", num_lvls - lvl, num_lvls))
                     .map(|(frames, maps)| {
-                        let img = blend_images(
+                        let img = blend_tensors3(
                             &Mapping::with_respect_to_idx(maps.to_vec(), 0.5),
                             frames,
                             Some((w as usize, h as usize)),
                         ).unwrap();
 
-                        resize(
-                            &img,
-                            (w as f32 / downscale as f32).round() as u32,
-                            (h as f32 / downscale as f32).round() as u32,
-                            FilterType::CatmullRom,
-                        )
+                        interpolate(
+                            img.permute([2, 0, 1]).unsqueeze_dim(0),
+                            [
+                                (h as f32 / downscale as f32).round() as usize,
+                                (w as f32 / downscale as f32).round() as usize,
+                            ],
+                            InterpolateOptions::new(InterpolateMode::Bicubic)
+                        ).squeeze::<3>(0).squeeze::<2>(0).unsqueeze_dim::<3>(2)
                     })
                     .collect();
 
@@ -370,7 +372,7 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
                 )?;
 
                 if args.viz_output.is_some() {
-                    stabilized_video(
+                    stabilized_video::<Luma<u8>, B>(
                         &Mapping::accumulate_wrt_idx(mappings.clone(), pano_args.wrt),
                         &virtual_exposures,
                         "tmp/",
@@ -386,18 +388,14 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
             }
             // ----------------------------------------------------------------------------------
 
-            let canvas = blend_images(
+            let canvas = blend_tensors3(
                 &Mapping::accumulate_wrt_idx(mappings.clone(), pano_args.wrt),
                 &virtual_exposures,
                 None,
             )?;
-
+            let canvas = tensor3_to_image::<Luma<u8>, B>(canvas);
             canvas.save(&args.output.unwrap_or("out.png".to_string()))?;
             Ok(())
         }
-        // Commands::Pano(pano_args) => {
-        //     println!("Not yet fixed!");
-        //     Ok(())
-        // }
     }
 }

@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::Result;
+use burn_tensor::Tensor;
 use conv::ValueInto;
 use image::{
     imageops::{resize, FilterType},
@@ -20,7 +21,7 @@ use photoncube2video::{
 };
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 
-use crate::{kernels::Backend, warps::Mapping};
+use crate::{kernels::Backend, transforms::tensor3_to_image, warps::Mapping};
 
 /// Conditionally setup a progressbar
 pub fn get_pbar(len: usize, message: Option<&str>) -> ProgressBar {
@@ -173,7 +174,7 @@ pub fn animate_hierarchical_warp<B: Backend>(
 
 pub fn stabilized_video<P, B>(
     mappings: &[Mapping<B>],
-    frames: &[Image<P>],
+    frames: &[Tensor<B, 3>],
     img_dir: &str,
     fps: Option<u64>,
     step: Option<usize>,
@@ -181,11 +182,10 @@ pub fn stabilized_video<P, B>(
     message: Option<&str>,
 ) -> Result<()>
 where
-    P: Pixel + PixelWithColorType + Send + Sync,
-    <P as Pixel>::Subpixel:
-        num_traits::Zero + Clone + Copy + ValueInto<f32> + Send + Sync + Clamp<f32>,
+    P: Pixel + PixelWithColorType,
+    <P as Pixel>::Subpixel: Clamp<f32>,
     [<P as Pixel>::Subpixel]: EncodableLayout,
-    f32: From<<P as Pixel>::Subpixel>,
+    Tensor<B, 3>: Send + Sync,
     B: Backend,
 {
     // Clear dir, and make sure it exists
@@ -196,7 +196,7 @@ where
 
     let sizes: Vec<_> = frames
         .iter()
-        .map(|f| (f.width() as usize, f.height() as usize))
+        .map(|f| (f.dims()[1], f.dims()[0]))
         .unique()
         .collect();
     let (extent, offset) = Mapping::maximum_extent(mappings, &sizes[..]);
@@ -210,14 +210,12 @@ where
         .step_by(step.unwrap_or(100))
         .enumerate()
         .for_each(|(i, (map, frame))| {
-            let img = map.transform(None, Some(offset.clone())).warp_image(
-                frame,
+            let (img, _) = map.transform(None, Some(offset.clone())).warp_tensor3(
+                frame.clone(),
                 (canvas_h.ceil() as usize, canvas_w.ceil() as usize),
-                Some(*P::from_slice(
-                    &vec![<P as Pixel>::Subpixel::DEFAULT_MIN_VALUE; P::CHANNEL_COUNT as usize],
-                )),
+                Some(vec![0.0; P::CHANNEL_COUNT.into()]),
             );
-
+            let img = tensor3_to_image::<P, B>(img);
             let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
             img.save(&path)
                 .unwrap_or_else(|_| panic!("Could not save frame at {}!", &path.display()));

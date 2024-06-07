@@ -6,7 +6,7 @@ use burn_jit::kernel::into_contiguous;
 use burn_tensor::{Shape, Tensor};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use image::{
-    // imageops::{resize, FilterType::CatmullRom},
+    imageops::{resize, FilterType::CatmullRom},
     io::Reader as ImageReader,
     Rgb,
 };
@@ -17,13 +17,12 @@ use pprof::criterion::{Output, PProfProfiler};
 use spano::{
     blend::{blend_images, distance_transform},
     kernels::Backend,
+    lk::iclk,
     warps::{Mapping, TransformationType},
-    // lk::iclk,
-    // warps::{Mapping, TransformationType},
 };
+type B = burn::backend::wgpu::JitBackend<WgpuRuntime<AutoGraphicsApi, f32, i32>>;
 
 fn benchmark_warp_tensor3(c: &mut Criterion) {
-    type B = burn::backend::wgpu::JitBackend<WgpuRuntime<AutoGraphicsApi, f32, i32>>;
     let device = &Default::default();
 
     let mapping = Mapping::<B>::from_matrix(
@@ -66,7 +65,6 @@ fn benchmark_warp_tensor3(c: &mut Criterion) {
 }
 
 pub fn benchmark_distance_transform(c: &mut Criterion) {
-    type B = burn::backend::wgpu::JitBackend<WgpuRuntime<AutoGraphicsApi, f32, i32>>;
     let device = &Default::default();
 
     c.bench_function("distance_transform", |b| {
@@ -76,38 +74,38 @@ pub fn benchmark_distance_transform(c: &mut Criterion) {
     });
 }
 
-// pub fn benchmark_iclk(c: &mut Criterion) {
-//     let img_src = ImageReader::open("tests/source.png")
-//         .unwrap()
-//         .decode()
-//         .unwrap()
-//         .into_rgb8();
-//     let img_src = resize(&img_src, 640 / 4, 480 / 4, CatmullRom);
+pub fn benchmark_iclk(c: &mut Criterion) {
+    let img_src = ImageReader::open("tests/source.png")
+        .unwrap()
+        .decode()
+        .unwrap()
+        .into_rgb8();
+    let img_src = resize(&img_src, 640 / 4, 480 / 4, CatmullRom);
 
-//     let img_dst = ImageReader::open("tests/warped.png")
-//         .unwrap()
-//         .decode()
-//         .unwrap()
-//         .into_rgb8();
-//     let img_dst = resize(&img_dst, 640 / 4, 480 / 4, CatmullRom);
+    let img_dst = ImageReader::open("tests/warped.png")
+        .unwrap()
+        .decode()
+        .unwrap()
+        .into_rgb8();
+    let img_dst = resize(&img_dst, 640 / 4, 480 / 4, CatmullRom);
 
-//     c.bench_function("iclk", |b| {
-//         b.iter(|| {
-//             // No patience, 25 iters, no early-stop.
-//             let (_map, _) = iclk(
-//                 &img_src,
-//                 &img_dst,
-//                 Mapping::from_params(vec![0.0; 8]),
-//                 None,
-//                 Some(25),
-//                 Some(1e-12),
-//                 Some(1),
-//                 None,
-//             )
-//             .unwrap();
-//         })
-//     });
-// }
+    c.bench_function("iclk", |b| {
+        b.iter(|| {
+            // No patience, 25 iters, no early-stop.
+            let (_map, _) = iclk(
+                &img_src,
+                &img_dst,
+                Mapping::<B>::from_params(vec![0.0; 8]),
+                None,
+                Some(25),
+                Some(1e-12),
+                Some(1),
+                None,
+            )
+            .unwrap();
+        })
+    });
+}
 
 pub fn benchmark_merge_images(c: &mut Criterion) {
     type B = burn::backend::wgpu::JitBackend<WgpuRuntime<AutoGraphicsApi, f32, i32>>;
@@ -151,20 +149,18 @@ criterion_group! {
             PProfProfiler::new(100, Output::Flamegraph(None))
         );
     targets =
-        // benchmark_warp_array3,
         benchmark_warp_tensor3,
         benchmark_distance_transform,
-        // benchmark_iclk,
+        benchmark_iclk,
         benchmark_merge_images
 }
 
 #[cfg(not(target_os = "linux"))]
 criterion_group! {
     benches,
-    // benchmark_warp_array3,
     benchmark_warp_tensor3,
     benchmark_distance_transform,
-    // benchmark_iclk,
+    benchmark_iclk,
     benchmark_merge_images
 }
 

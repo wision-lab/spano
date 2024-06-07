@@ -4,6 +4,7 @@ use image::{ImageBuffer, Pixel};
 use imageproc::definitions::Clamp;
 use ndarray::{ArrayBase, Dim, IxDynImpl, OwnedRepr};
 use num_traits::ToPrimitive;
+use photoncube2video::transforms::Transform;
 
 use crate::kernels::Backend;
 
@@ -71,6 +72,23 @@ pub fn array_to_tensor<B: Backend, const D: usize>(
     let primitive: NdArrayTensor<f32, D> = NdArrayTensor::new(array.into());
     let arr = Tensor::<NdArray, D>::from_primitive(primitive);
     Tensor::<B, D>::from_data(arr.into_data().convert(), device)
+}
+
+pub fn apply_tensor_transforms<B: Backend>(frame: Tensor<B, 2>, transform: &[Transform]) -> Tensor<B, 2> {
+    // Note: if we don't shadow `frame` as a mut, we cannot override it in the loop
+    let mut frame = frame;
+
+    for t in transform.iter() {
+        frame = match t {
+            Transform::Identity => continue,
+            Transform::Rot90 => frame.transpose().flip([1]),
+            Transform::Rot180 => frame.flip([0, 1]),
+            Transform::Rot270 => frame.transpose().flip([0]),
+            Transform::FlipUD => frame.flip([0]),
+            Transform::FlipLR => frame.flip([1]),
+        };
+    }
+    frame
 }
 
 /// Perform batch matrix multiplication by splitting first dimension

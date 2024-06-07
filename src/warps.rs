@@ -1,6 +1,5 @@
 use burn_tensor::{
-    ops::{BoolTensor, FloatTensor},
-    Shape, Tensor,
+    ops::{BoolTensor, FloatTensor}, Bool, Shape, Tensor
 };
 use image::Pixel;
 use imageproc::definitions::{Clamp, Image};
@@ -165,7 +164,7 @@ impl<B: Backend> Mapping<B> {
             background.map(|v| v.channels().into_iter().map(|i| f32::from(*i)).collect());
         let img_src = image_to_tensor3::<P, B>(data.clone(), &self.device());
         let (img_warped, _) = self.warp_tensor3(img_src, out_size, background);
-        tensor3_to_image::<P, B>(Tensor::from_primitive(img_warped))
+        tensor3_to_image::<P, B>(img_warped)
     }
 
     /// Warp array using mapping into a new buffer of shape `out_size`.
@@ -175,7 +174,7 @@ impl<B: Backend> Mapping<B> {
         data: Tensor<B, 3>,
         out_size: (usize, usize),
         background: Option<Vec<f32>>,
-    ) -> (FloatTensor<B, 3>, BoolTensor<B, 2>) {
+    ) -> (Tensor<B, 3>, Tensor<B, 2, Bool>) {
         let (h, w) = out_size;
         let [_, _, c] = data.dims();
         let device = &data.device();
@@ -183,7 +182,7 @@ impl<B: Backend> Mapping<B> {
         let mut valid = B::bool_empty(Shape::new([h, w]), &device);
 
         self.warp_tensor3_into(data, &mut out, &mut valid, background);
-        (out, valid)
+        (Tensor::from_primitive(out), Tensor::from_primitive(valid))
     }
 
     /// Main interface for warping tensors, use directly if output/valid buffers can be reused.
