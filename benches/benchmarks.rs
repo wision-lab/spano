@@ -10,8 +10,7 @@ use image::{
     io::Reader as ImageReader,
     Rgb,
 };
-use numpy::array;
-// use ndarray::{array, Array3};
+use ndarray::array;
 use photoncube2video::transforms::image_to_array3;
 #[cfg(target_os = "linux")]
 use pprof::criterion::{Output, PProfProfiler};
@@ -60,7 +59,7 @@ fn benchmark_warp_tensor3(c: &mut Criterion) {
                 black_box(input.clone()),
                 &mut black_box(output.clone()),
                 &mut black_box(valid.clone()),
-                vec![0.0, 0.0, 0.0],
+                Some(vec![0.0, 0.0, 0.0]),
             );
         })
     });

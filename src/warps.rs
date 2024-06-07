@@ -5,7 +5,7 @@ use burn_tensor::{
 use image::Pixel;
 use imageproc::definitions::{Clamp, Image};
 use itertools::chain;
-use ndarray::{array, Array, Array1, Array2, Axis};
+use ndarray::{array, Array, Array1, Array2, Axis, Ix2};
 use ndarray_interp::interp1d::{CubicSpline, Interp1DBuilder, Linear};
 use ndarray_linalg::solve::Inverse;
 use strum::{EnumCount, VariantArray};
@@ -13,7 +13,7 @@ use strum_macros::{Display, EnumString};
 
 use crate::{
     kernels::Backend,
-    transforms::{array2_to_tensor2, image_to_tensor3, tensor2_to_array2, tensor3_to_image},
+    transforms::{array_to_tensor, image_to_tensor3, tensor3_to_image, tensor_to_array},
 };
 
 // Note: We cannot use #[pyclass] her as we're stuck in pyo3@0.15.2 to support py36, so
@@ -64,7 +64,7 @@ impl<B: Backend> Mapping<B> {
     pub fn from_matrix(mat: Array2<f32>, kind: TransformationType) -> Self {
         let device = Default::default();
         Self {
-            mat: array2_to_tensor2::<f32, B>(mat, &device),
+            mat: array_to_tensor::<B, 2>(mat.into_dyn(), &device),
             kind,
         }
     }
@@ -74,7 +74,10 @@ impl<B: Backend> Mapping<B> {
     }
 
     pub fn to_device(&self, device: &B::Device) -> Self {
-        Self {mat: self.mat.clone().to_device(device), kind: self.kind}
+        Self {
+            mat: self.mat.clone().to_device(device),
+            kind: self.kind,
+        }
     }
 
     /// Warp a set of Nx2 points using the mapping.
@@ -84,7 +87,7 @@ impl<B: Backend> Mapping<B> {
         }
 
         let num_points = points.dims()[0];
-        let ones = Tensor::ones(Shape::new([num_points, 1]), &self.device());
+        let ones = Tensor::ones([num_points, 1], &self.device());
         let points = Tensor::cat(vec![points, ones], 1);
 
         let warped_points = self.mat.clone().matmul(points.transpose()).transpose();
@@ -97,13 +100,14 @@ impl<B: Backend> Mapping<B> {
     /// Get location of corners of an image of shape `size` once warped with `self`.
     pub fn corners(&self, size: (usize, usize)) -> Tensor<B, 2> {
         let (w, h) = size;
-        let corners = array2_to_tensor2(
+        let corners = array_to_tensor(
             array![
                 [0.0, 0.0],
                 [w as f32, 0.0],
                 [w as f32, h as f32],
                 [0.0, h as f32]
-            ],
+            ]
+            .into_dyn(),
             &self.device(),
         );
         self.inverse().warp_points(corners)
@@ -202,8 +206,7 @@ impl<B: Backend> Mapping<B> {
         valid: &mut BoolTensor<B, 2>,
         background: Option<Vec<f32>>,
     ) {
-        let bkg = background.unwrap_or(vec![0.0, 0.0, 0.0]);
-        B::warp_into_tensor3(self.clone(), data, out, valid, bkg);
+        B::warp_into_tensor3(self.clone(), data, out, valid, background);
     }
 
     /// Given a list of transform parameters, return the Mapping that would transform a
@@ -369,7 +372,9 @@ impl<B: Backend> Mapping<B> {
     /// Get minimum number of parameters that describe the Mapping.
     // #[pyo3(text_signature = "(self) -> List[float]")]
     pub fn get_params(&self) -> Vec<f32> {
-        let mat: Array2<f32> = tensor2_to_array2(self.mat.clone());
+        let mat = tensor_to_array(self.mat.clone())
+            .into_dimensionality::<Ix2>()
+            .unwrap();
         let p = (&mat.clone() / mat[(2, 2)]).into_raw_vec();
         match &self.kind {
             TransformationType::Identity => vec![],
@@ -385,7 +390,9 @@ impl<B: Backend> Mapping<B> {
     /// Get all parameters of the Mapping (overparameterized for everything but projective warp).
     // #[pyo3(text_signature = "(self) -> List[float]")]
     pub fn get_params_full(&self) -> Vec<f32> {
-        let mat: Array2<f32> = tensor2_to_array2(self.mat.clone());
+        let mat = tensor_to_array(self.mat.clone())
+            .into_dimensionality::<Ix2>()
+            .unwrap();
         let p = (&mat.clone() / mat[(2, 2)]).into_raw_vec();
         vec![p[0] - 1.0, p[3], p[1], p[4] - 1.0, p[2], p[5], p[6], p[7]]
     }
@@ -394,10 +401,13 @@ impl<B: Backend> Mapping<B> {
     // #[pyo3(text_signature = "(self) -> Self")]
     pub fn inverse(&self) -> Self {
         // TODO: Is this really necessary?!
-        let mat = array2_to_tensor2(
-            tensor2_to_array2(self.mat.clone())
+        let mat = array_to_tensor(
+            tensor_to_array(self.mat.clone())
+                .into_dimensionality::<Ix2>()
+                .unwrap()
                 .inv()
-                .expect("Cannot invert mapping"),
+                .expect("Cannot invert mapping")
+                .into_dyn(),
             &self.device(),
         );
         Self {
@@ -482,12 +492,10 @@ impl<B: Backend> Mapping<B> {
 #[cfg(test)]
 mod test_warps {
     use burn::backend::wgpu::{AutoGraphicsApi, WgpuRuntime};
+    use burn_tensor::Tensor;
     use ndarray::{array, Array2};
 
-    use crate::{
-        transforms::array2_to_tensor2,
-        warps::{Mapping, TransformationType},
-    };
+    use crate::warps::{Mapping, TransformationType};
 
     #[test]
     fn test_warp_points() {
@@ -502,9 +510,9 @@ mod test_warps {
             ],
             TransformationType::Projective,
         );
-        let point = array2_to_tensor2(array![[0.0, 0.0]], &device);
+        let point = Tensor::from_floats([[0.0, 0.0]], &device);
         let warpd = map.warp_points(point);
-        array2_to_tensor2::<f32, MyBackend>(array![[3.56534624, 0.61332092]], &device)
+        Tensor::<MyBackend, 2>::from_floats([[3.56534624, 0.61332092]], &device)
             .into_data()
             .assert_approx_eq(&warpd.into_data(), 3);
     }

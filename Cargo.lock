@@ -277,6 +277,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "burn-autodiff"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf9479c28bdce3f2b1541f0a9215628f6256b5f3d66871192a3c56d55171d28e"
+dependencies = [
+ "burn-common",
+ "burn-tensor",
+ "derive-new",
+ "log",
+ "spin",
+]
+
+[[package]]
 name = "burn-common"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -377,6 +390,25 @@ dependencies = [
  "serde",
  "spin",
  "text_placeholder",
+]
+
+[[package]]
+name = "burn-ndarray"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05f40bb0b5938937a721045752f1ec1baee8a873429fd17e6e6f2155c6cdf33a"
+dependencies = [
+ "burn-autodiff",
+ "burn-common",
+ "burn-tensor",
+ "derive-new",
+ "libm",
+ "matrixmultiply",
+ "ndarray",
+ "num-traits",
+ "rand 0.8.5",
+ "rayon",
+ "spin",
 ]
 
 [[package]]
@@ -3011,6 +3043,7 @@ dependencies = [
  "approx 0.5.1",
  "burn",
  "burn-jit",
+ "burn-ndarray",
  "burn-tensor",
  "bytemuck",
  "cached",

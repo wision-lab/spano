@@ -22,7 +22,7 @@ kernel_wgsl!(BlendRaw, "./blend_kernel.wgsl");
 #[derive(new, Debug)]
 struct WarpKernel<E: FloatElement> {
     cube_dim: WorkgroupSize,
-    background: Vec<f32>,
+    background: Option<Vec<f32>>,
     _elem: PhantomData<E>,
 }
 
@@ -37,7 +37,14 @@ impl<E: FloatElement> KernelSource for WarpKernel<E> {
     fn source(&self) -> SourceTemplate {
         // Extend our raw kernel with cube size information using the
         // `SourceTemplate` trait.
-        let bkg_str = (self.background.iter().map(|i| format!("{:.4}", i)))
+        let default_bkg = vec![0.0, 0.0, 0.0];
+        let (bkg, padding) = if let Some(bkg) = &self.background {
+            (bkg, "1.0")
+        } else {
+            (&default_bkg, "0.0")
+        };
+
+        let bkg_str = (bkg.iter().map(|i| format!("{:.4}", i)))
             .collect::<Vec<_>>()
             .join(", ");
 
@@ -47,7 +54,7 @@ impl<E: FloatElement> KernelSource for WarpKernel<E> {
             .register("workgroup_size_y", self.cube_dim.y.to_string())
             .register("workgroup_size_z", self.cube_dim.z.to_string())
             .register("background_color", bkg_str.to_string())
-            .register("padding", "1.0".to_string())
+            .register("padding", padding)
             .register("elem", E::type_name())
             .register("int", "i32")
     }
@@ -62,7 +69,7 @@ impl<E: FloatElement> KernelSource for BlendKernel<E> {
             .register("workgroup_size_x", self.cube_dim.x.to_string())
             .register("workgroup_size_y", self.cube_dim.y.to_string())
             .register("workgroup_size_z", self.cube_dim.z.to_string())
-            .register("padding", "1.0".to_string())
+            .register("padding", "0.0".to_string())
             .register("elem", E::type_name())
             .register("int", "i32")
     }
@@ -75,7 +82,7 @@ pub trait Backend: burn::tensor::backend::Backend {
         input: Tensor<Self, 3>,
         output: &mut FloatTensor<Self, 3>,
         valid: &mut BoolTensor<Self, 2>,
-        background: Vec<f32>,
+        background: Option<Vec<f32>>,
     );
 
     fn blend_into_tensor3(
@@ -93,7 +100,7 @@ impl<G: GraphicsApi, F: FloatElement, I: IntElement> Backend for JitBackend<Wgpu
         input: Tensor<Self, 3>,
         output: &mut FloatTensor<Self, 3>,
         valid: &mut BoolTensor<Self, 2>,
-        background: Vec<f32>,
+        background: Option<Vec<f32>>,
     ) {
         // Validate devices
         if mapping.device() != input.device() {

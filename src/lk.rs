@@ -3,19 +3,13 @@ use std::collections::{HashMap, VecDeque};
 use anyhow::{anyhow, Result};
 use burn::{
     module::{Param, ParamId},
-    nn::{
-        conv::{Conv2d, Conv2dConfig},
-        Initializer,
-    },
+    nn::{conv::Conv2dConfig, Initializer, PaddingConfig2d},
 };
-use burn_tensor::{
-    ops::{IntTensor, IntTensorOps},
-    Int, Shape, Tensor,
-};
+use burn_tensor::{ElementConversion, Int, Shape, Tensor};
 use conv::{ValueFrom, ValueInto};
 use image::{
     imageops::{colorops::grayscale, resize, FilterType},
-    GrayImage, Luma, Pixel, Primitive,
+    GrayImage, Luma, Pixel,
 };
 use imageproc::{
     definitions::{Clamp, Image},
@@ -23,80 +17,94 @@ use imageproc::{
     gradients::{HORIZONTAL_SCHARR, VERTICAL_SCHARR},
 };
 use itertools::izip;
-use ndarray::{concatenate, par_azip, s, stack, Array, Array1, Array2, ArrayBase, Axis, NewAxis};
+use ndarray::Ix2;
 use ndarray_linalg::solve::Inverse;
-use photoncube2video::transforms::{grayimage_to_array2, ref_image_to_array3};
-use rayon::prelude::*;
+use num_traits::ToPrimitive;
 
 use crate::{
-    kernel::Backend,
+    kernels::Backend,
+    transforms::{array_to_tensor, bmm, image_to_tensor3, tensor3_to_image, tensor_to_array},
     utils::get_pbar,
     warps::{Mapping, TransformationType},
 };
 
-/// Compute image gradients using Scharr operator
-/// Returned (dx, dy) pair as HxW arrays.
-pub fn gradients<T>(img: &Image<Luma<T>>) -> (Array2<f32>, Array2<f32>)
-where
-    T: Primitive,
-    f32: ValueFrom<T>,
-{
-    (
-        grayimage_to_array2(filter3x3(img, &HORIZONTAL_SCHARR.map(|v| v as f32))),
-        grayimage_to_array2(filter3x3(img, &VERTICAL_SCHARR.map(|v| v as f32))),
-    )
+/// Compute image gradients using Scharr operator.
+/// Input is expected to be grayscale, HW1 format.
+/// Returned (dx, dy) pair as HxWx1 tensors.
+/// WARNING: These gradients might be the negative grad due to convolutions... TODO?
+pub fn tensor_gradients_<B: Backend>(img: Tensor<B, 3>) -> (Tensor<B, 3>, Tensor<B, 3>) {
+    // Input is HWC, needs to be 1CHW for conv to work.
+    let [h, w, _] = img.dims();
+    let img = img.permute([2, 0, 1]).unsqueeze_dim(0);
+
+    // Weights need to be of shape `[channels_out, channels_in / groups, kernel_size_1, kernel_size_2]`
+    let config = Conv2dConfig::new([2, 1], [3, 3])
+        .with_padding(PaddingConfig2d::Explicit(1, 1))
+        .with_initializer(Initializer::Zeros);
+    let device = Default::default();
+    let mut conv = config.init::<B>(&device);
+    let horizontal = Tensor::<B, 1, Int>::from_ints(HORIZONTAL_SCHARR, &device)
+        .reshape([1, 3, 3])
+        .float();
+    let vertical = Tensor::<B, 1, Int>::from_ints(VERTICAL_SCHARR, &device)
+        .reshape([1, 3, 3])
+        .float();
+
+    let weights = Tensor::stack(vec![horizontal, vertical], 0);
+    conv.weight = Param::initialized(ParamId::new(), weights);
+
+    let grad = conv.forward(img).squeeze(0).permute([1, 2, 0]);
+    let grad_x = grad.clone().slice([0..(h as usize), 0..(w as usize), 0..1]);
+    let grad_y = grad.clone().slice([0..(h as usize), 0..(w as usize), 1..2]);
+    (grad_x, grad_y)
 }
 
-// /// Compute image gradients using Scharr operator
-// /// Returned (dx, dy) pair as HxW arrays.
-// pub fn tensor_gradients<B>(img: Tensor<B, 3>) -> Tensor<B, 3>
-// where
-//     B: Backend,
-// {
-//     // TODO: Input is HWC, needs to be 1CHW for conv to work.
-//     // Tensor of shape `[channels_out, channels_in / groups, kernel_size_1, kernel_size_2]`
-//     let config = Conv2dConfig::new([2, 3], [3, 3]).with_initializer(Initializer::Zeros);
-//     let device = Default::default();
-//     let mut conv = config.init::<B>(&device);
-//     let horizontal = Tensor::<B, 1, Int>::from_ints(HORIZONTAL_SCHARR, &device)
-//         .reshape(Shape::new([1, 3, 3]))
-//         .float();
-//     let vertical = Tensor::<B, 1, Int>::from_ints(VERTICAL_SCHARR, &device)
-//         .reshape(Shape::new([1, 3, 3]))
-//         .float();
-
-//     let weights = Tensor::stack(vec![horizontal, vertical], 0)
-//         .repeat(1, 3);
-//     conv.weight = Param::initialized(ParamId::new(), weights);
-//     conv.forward(img)
-// }
+/// Compute image gradients using Scharr operator
+/// Returned (dx, dy) pair as HxW arrays.
+pub fn tensor_gradients<B: Backend>(img: Tensor<B, 3>) -> (Tensor<B, 3>, Tensor<B, 3>) {
+    let img_ = tensor3_to_image::<Luma<f32>, B>(img.clone());
+    (
+        image_to_tensor3::<Luma<f32>, B>(
+            filter3x3(&img_, &HORIZONTAL_SCHARR.map(|v| v as f32)),
+            &img.device(),
+        ),
+        image_to_tensor3::<Luma<f32>, B>(
+            filter3x3(&img_, &VERTICAL_SCHARR.map(|v| v as f32)),
+            &img.device(),
+        ),
+    )
+}
 
 /// Estimate the warp that maps `img2` to `img1` using the Inverse Compositional Lucas-Kanade algorithm.
 /// In other words, img2 is the template and img1 is the static image.
 #[allow(clippy::too_many_arguments)]
-pub fn iclk<P>(
+pub fn iclk<P, B>(
     im1: &Image<P>,
     im2: &Image<P>,
-    init_mapping: Mapping,
+    init_mapping: Mapping<B>,
     im1_weights: Option<&GrayImage>,
     max_iters: Option<i32>,
     stop_early: Option<f32>,
     patience: Option<usize>,
     message: Option<&str>,
-) -> Result<(Mapping, Vec<Vec<f32>>)>
+) -> Result<(Mapping<B>, Vec<Vec<f32>>)>
 where
     P: Pixel + Send + Sync,
     <P as Pixel>::Subpixel: Send + Sync + 'static,
     <P as Pixel>::Subpixel: ValueInto<f32> + From<u8> + Clamp<f32>,
     f32: ValueFrom<<P as Pixel>::Subpixel> + From<<P as Pixel>::Subpixel>,
+    B: Backend,
 {
-    let im1_gray = grayscale(im1);
-    let im2_gray = grayscale(im2);
-    let (dx, dy) = gradients(&im2_gray);
+    let device = &init_mapping.device();
+    let im1_gray = image_to_tensor3(grayscale(im1), device);
+    let im2_gray = image_to_tensor3(grayscale(im2), device);
+    let (dx, dy) = tensor_gradients(im2_gray.clone());
+    let im1_weights =
+        im1_weights.map(|w| image_to_tensor3::<Luma<u8>, B>(w.clone(), device).squeeze(2));
 
     iclk_grayscale(
-        &im1_gray,
-        &im2_gray,
+        im1_gray,
+        im2_gray,
         (dx, dy),
         init_mapping,
         im1_weights,
@@ -122,186 +130,173 @@ where
 ///
 /// TODO: Is anything actually enforcing this to be grayscale/single-channel?
 #[allow(clippy::too_many_arguments)]
-pub fn iclk_grayscale<T>(
-    im1_gray: &Image<Luma<T>>,
-    im2_gray: &Image<Luma<T>>,
-    im2_grad: (Array2<f32>, Array2<f32>),
-    init_mapping: Mapping,
-    im1_weights: Option<&GrayImage>,
+pub fn iclk_grayscale<B: Backend>(
+    im1_gray: Tensor<B, 3>,
+    im2_gray: Tensor<B, 3>,
+    im2_grad: (Tensor<B, 3>, Tensor<B, 3>),
+    init_mapping: Mapping<B>,
+    im1_weights: Option<Tensor<B, 2>>,
     max_iters: Option<i32>,
     stop_early: Option<f32>,
     patience: Option<usize>,
     message: Option<&str>,
-) -> Result<(Mapping, Vec<Vec<f32>>)>
-where
-    T: Primitive + Clamp<f32> + Send + Sync + 'static,
-    f32: ValueFrom<T> + From<T>,
-{
+) -> Result<(Mapping<B>, Vec<Vec<f32>>)> {
     // Initialize values
     let mut params = init_mapping.inverse().get_params();
     let num_params = params.len();
-    let h = im2_gray.height();
-    let w = im2_gray.width();
-    let c = 1;
-    let points = Array::from_shape_fn(((w * h) as usize, 2), |(i, j)| {
-        if j == 0 {
-            i % w as usize
-        } else {
-            i / w as usize
-        }
-    });
-    let xs = points.column(0).mapv(|v| v as f32);
-    let ys = points.column(1).mapv(|v| v as f32);
-    let num_points = (w * h) as usize;
+    let [h, w, c] = im2_gray.dims();
 
-    let (img1_array, has_weights) = if let Some(weights) = im1_weights {
-        let mut img1_array = ref_image_to_array3(im1_gray).mapv(|v| f32::from(v));
-        img1_array = concatenate(
-            Axis(2),
-            &[
-                img1_array.view(),
-                ref_image_to_array3::<Luma<u8>>(weights)
-                    .mapv(|v| v as f32 / 255.0)
-                    .view(),
-            ],
-        )?;
-        (img1_array.as_standard_layout().to_owned(), true)
+    let device = &init_mapping.device();
+    // TODO: Use modulo here once it's available. See: https://github.com/tracel-ai/burn/pull/1726
+    let xs: Tensor<B, 2> = Tensor::arange(0..(w as i64), device)
+        .unsqueeze_dim::<2>(0)
+        .repeat(0, h)
+        .float();
+    let ys: Tensor<B, 2> = Tensor::arange(0..(h as i64), device)
+        .unsqueeze_dim::<2>(1)
+        .repeat(1, w)
+        .float();
+
+    // Augment img1 with any weights
+    let (im1_gray, has_weights) = if let Some(weights) = im1_weights {
+        (
+            Tensor::cat(vec![im1_gray, weights.unsqueeze_dim(2)], 2),
+            true,
+        )
     } else {
-        (ref_image_to_array3(im1_gray).mapv(|v| f32::from(v)), false)
+        (im1_gray, false)
     };
-    let mut warped_im1gray_pixels = Array2::<f32>::zeros((num_points, img1_array.len_of(Axis(2))));
-
-    let img2_pixels = ref_image_to_array3(im2_gray)
-        .mapv(|v| f32::from(v))
-        .into_shape((num_points, 1))?;
-    let mut valid = Array1::<bool>::from_elem(num_points, false);
+    // Initialize buffers that we'll warp data into
+    // Note: These can be initialized as empty because all values are overridden anyways
+    let mut warped_im1gray = B::float_empty(Shape::new([h, w, c + (has_weights as usize)]), device);
+    let mut valid = B::bool_empty(Shape::new([h, w]), device);
 
     // These can be cached, so we init them before the main loop
     let (dx, dy) = im2_grad;
-    let (steepest_descent_ic_t, hessian_inv) = match init_mapping.kind {
+    let (steepest_descent_ic_t, hessian) = match init_mapping.kind {
         TransformationType::Translational => {
-            let steepest_descent_ic_t = stack![
-                Axis(1),
-                dx.into_shape(num_points)?,
-                dy.into_shape(num_points)?
-            ]; // (Nx2)
+            let steepest_descent_ic_t: Tensor<B, 3> = Tensor::cat(vec![dx.clone(), dy.clone()], 2); // (HxWx2)
 
-            let hessian_inv = (steepest_descent_ic_t.clone().permuted_axes([1, 0]))
-                .dot(&steepest_descent_ic_t)
-                .inv()
-                .unwrap();
+            let flat_steepest_descent_ic_t: Tensor<B, 2> =
+                steepest_descent_ic_t.clone().flatten(0, 1); // (Nx2)
 
-            // (Nx2x1)              (2x2)
-            (
-                steepest_descent_ic_t.slice(s![.., .., NewAxis]).to_owned(),
-                hessian_inv,
-            )
+            let hessian = flat_steepest_descent_ic_t
+                .clone()
+                .transpose()
+                .matmul(flat_steepest_descent_ic_t); // (2x2)
+
+            // (HxWx2), (2x2)
+            (steepest_descent_ic_t, hessian)
         }
         TransformationType::Affine => {
-            let mut steepest_descent_ic_t = Array2::zeros((num_points, params.len()));
-
             let jacobian_p = {
-                let ones: Array1<f32> = ArrayBase::ones(num_points);
-                let zeros: Array1<f32> = ArrayBase::zeros(num_points);
-                stack![
-                    Axis(0),
-                    stack![Axis(0), xs, zeros, ys, zeros, ones, zeros],
-                    stack![Axis(0), zeros, xs, zeros, ys, zeros, ones]
-                ]
-                .permuted_axes([2, 0, 1])
-            }; // (Nx2x6)
-
-            let grad_im2 = stack![
-                Axis(2),
-                dx.into_shape((num_points, 1))?,
-                dy.into_shape((num_points, 1))?
-            ]; // (Nx1x2)
-
-            // Perform the batch matrix multiply of grad_im2 @ jacobian_p
-            par_azip!(
-                (
-                    mut v in steepest_descent_ic_t.axis_iter_mut(Axis(0)),
-                    a in grad_im2.axis_iter(Axis(0)),
-                    b in jacobian_p.axis_iter(Axis(0))
+                let ones = Tensor::ones_like(&xs);
+                let zeros = Tensor::zeros_like(&ys);
+                Tensor::stack(
+                    // 2x6xHxW
+                    vec![
+                        Tensor::stack::<3>(
+                            vec![
+                                xs.clone(),
+                                zeros.clone(),
+                                ys.clone(),
+                                zeros.clone(),
+                                ones.clone(),
+                                zeros.clone(),
+                            ],
+                            0,
+                        ), // 6xHxW
+                        Tensor::stack::<3>(
+                            vec![
+                                zeros.clone(),
+                                xs.clone(),
+                                zeros.clone(),
+                                ys.clone(),
+                                zeros.clone(),
+                                ones.clone(),
+                            ],
+                            0,
+                        ), // 6xHxW
+                    ],
+                    0,
                 )
-                {v.assign(&a.dot(&b).into_shape(params.len()).unwrap())}
-            );
+                .permute([2, 3, 0, 1])
+            }; // (HxWx2x6)
 
-            let hessian_inv = (steepest_descent_ic_t.clone().permuted_axes([1, 0]))
-                .dot(&steepest_descent_ic_t)
-                .inv()
-                .unwrap();
+            let grad_im2: Tensor<B, 4> = Tensor::stack(vec![dx.clone(), dy.clone()], 3); // (HxWx1x2)
+            let steepest_descent_ic_t = bmm::<B>(grad_im2.flatten(0, 1), jacobian_p.flatten(0, 1))
+                .reshape(Shape::new([h, w, 6]));
 
-            // (Nx6x1)              (6x6)
-            (
-                steepest_descent_ic_t.slice(s![.., .., NewAxis]).to_owned(),
-                hessian_inv,
-            )
+            let flat_steepest_descent_ic_t: Tensor<B, 2> =
+                steepest_descent_ic_t.clone().flatten(0, 1); // (Nx6)
+
+            let hessian = flat_steepest_descent_ic_t
+                .clone()
+                .transpose()
+                .matmul(flat_steepest_descent_ic_t); // (6x6)
+
+            // (HxWx6), (6x6)
+            (steepest_descent_ic_t, hessian)
         }
         TransformationType::Projective => {
-            let mut steepest_descent_ic_t = Array2::zeros((num_points, params.len()));
-
             // dW_dp evaluated at (x, p) and p=0 (identity transform)
             let jacobian_p = {
-                let ones: Array1<f32> = ArrayBase::ones(num_points);
-                let zeros: Array1<f32> = ArrayBase::zeros(num_points);
-                let minus_xx: Vec<f32> = xs.iter().map(|i1| -i1 * i1).collect();
-                let minus_yy: Vec<f32> = ys.iter().map(|i1| -i1 * i1).collect();
-                let minus_xy: Vec<f32> = xs.iter().zip(&ys).map(|(i1, i2)| -i1 * i2).collect();
-                stack![
-                    Axis(0),
-                    stack![
-                        Axis(0),
-                        xs,
-                        zeros,
-                        ys,
-                        zeros,
-                        ones,
-                        zeros,
-                        minus_xx,
-                        minus_xy
+                let ones = Tensor::ones_like(&xs);
+                let zeros = Tensor::zeros_like(&ys);
+
+                let minus_xx = -xs.clone() * xs.clone();
+                let minus_yy = -ys.clone() * ys.clone();
+                let minus_xy = -xs.clone() * ys.clone();
+
+                Tensor::stack(
+                    // 2x8xHxW
+                    vec![
+                        Tensor::stack::<3>(
+                            vec![
+                                xs.clone(),
+                                zeros.clone(),
+                                ys.clone(),
+                                zeros.clone(),
+                                ones.clone(),
+                                zeros.clone(),
+                                minus_xx.clone(),
+                                minus_xy.clone(),
+                            ],
+                            0,
+                        ), // 8xHxW
+                        Tensor::stack::<3>(
+                            vec![
+                                zeros.clone(),
+                                xs.clone(),
+                                zeros.clone(),
+                                ys.clone(),
+                                zeros.clone(),
+                                ones.clone(),
+                                minus_xy.clone(),
+                                minus_yy.clone(),
+                            ],
+                            0,
+                        ), // 8xHxW
                     ],
-                    stack![
-                        Axis(0),
-                        zeros,
-                        xs,
-                        zeros,
-                        ys,
-                        zeros,
-                        ones,
-                        minus_xy,
-                        minus_yy
-                    ]
-                ]
-                .permuted_axes([2, 0, 1])
-            }; // (Nx2x8)
-
-            let grad_im2 = stack![
-                Axis(2),
-                dx.into_shape((num_points, 1))?,
-                dy.into_shape((num_points, 1))?
-            ]; // (Nx1x2)
-
-            // Perform the batch matrix multiply of grad_im2 @ jacobian_p
-            par_azip!(
-                (
-                    mut v in steepest_descent_ic_t.axis_iter_mut(Axis(0)),
-                    a in grad_im2.axis_iter(Axis(0)),
-                    b in jacobian_p.axis_iter(Axis(0))
+                    0,
                 )
-                {v.assign(&a.dot(&b).into_shape(params.len()).unwrap())}
-            );
+                .permute([2, 3, 0, 1])
+            }; // (HxWx2x8)
 
-            let hessian_inv = (steepest_descent_ic_t.clone().permuted_axes([1, 0]))
-                .dot(&steepest_descent_ic_t)
-                .inv()
-                .unwrap();
+            let grad_im2: Tensor<B, 4> = Tensor::stack(vec![dx.clone(), dy.clone()], 3); // (HxWx1x2)
+            let steepest_descent_ic_t = bmm::<B>(grad_im2.flatten(0, 1), jacobian_p.flatten(0, 1))
+                .reshape(Shape::new([h, w, 8]));
 
-            // (Nx8x1)              (8x8)
-            (
-                steepest_descent_ic_t.slice(s![.., .., NewAxis]).to_owned(),
-                hessian_inv,
-            )
+            let flat_steepest_descent_ic_t: Tensor<B, 2> =
+                steepest_descent_ic_t.clone().flatten(0, 1); // (Nx8)
+
+            let hessian = flat_steepest_descent_ic_t
+                .clone()
+                .transpose()
+                .matmul(flat_steepest_descent_ic_t); // (8x8)
+
+            // (HxWx8), (8x8)
+            (steepest_descent_ic_t, hessian)
         }
         _ => {
             return Err(anyhow!(
@@ -310,61 +305,59 @@ where
             ))
         }
     };
+    // Ewwww, I know. See: https://github.com/tracel-ai/burn/issues/1538
+    let hessian_inv = array_to_tensor::<B, 2>(
+        tensor_to_array(hessian)
+            .into_dimensionality::<Ix2>()
+            .expect("Matrix should be 2-dimensional")
+            .inv()?
+            .into_dyn(),
+        device,
+    );
 
     // Tracking variables
     let pbar = get_pbar(max_iters.unwrap_or(250) as usize, message);
     let mut params_history = vec![];
     params_history.push(params.clone());
-    let mut dps: VecDeque<Array2<f32>> = VecDeque::with_capacity(patience.unwrap_or(10));
+    let mut dps: VecDeque<_> = VecDeque::with_capacity(patience.unwrap_or(10));
 
     // Main optimization loop
     for i in 0..max_iters.unwrap_or(250) {
         pbar.set_position(i as u64);
 
-        // Create mapping from params and use it to sample points from img1
-        // TODO: Warp with background or without?
-        let mapping = Mapping::from_params(params);
-        mapping.warp_array3_into::<f32, _, _, _, _, _>(
-            &img1_array,
-            &mut warped_im1gray_pixels,
-            &mut valid,
-            &points,
-            None,
-            None,
-        );
+        // Create mapping from params and use it to warp img1 into img2's coordinate frame
+        let mapping = Mapping::<B>::from_params(params).to_device(device);
+        mapping.warp_tensor3_into(im1_gray.clone(), &mut warped_im1gray, &mut valid, None);
+
+        let (warped_im1_vals, weights) = if has_weights {
+            // Extract warped img1 and warped weights, and zero out weights where not valid
+            let warped_im1_vals = B::float_slice(warped_im1gray.clone(), [0..h, 0..w, 0..c]);
+            let weights = B::float_slice(warped_im1gray.clone(), [0..h, 0..w, c..c + 1]);
+            let weights = B::float_reshape(weights, Shape::new([h, w]));
+            let weights = B::float_mask_fill(weights, valid.clone(), (0.0).elem());
+            (warped_im1_vals, weights)
+        } else {
+            (warped_im1gray.clone(), B::bool_into_float(valid.clone()))
+        };
 
         // Calculate parameter update dp
-        let dp: Array2<f32> = hessian_inv.dot(
-            &(
-                steepest_descent_ic_t.axis_iter(Axis(0)),
-                warped_im1gray_pixels.axis_iter(Axis(0)),
-                img2_pixels.axis_iter(Axis(0)),
-                valid.as_slice().unwrap().par_iter(),
-            )
-                // Zip together all three iterators and valid flag
-                .into_par_iter()
-                // Drop them if the warped value from is out-of-bounds
-                // Calculate parameter update according to formula
-                .filter_map(|(sd, p1, p2, &is_valid)| {
-                    if is_valid {
-                        let weight = if has_weights { p1[c] } else { 1.0 };
-                        Some(
-                            sd.to_owned()
-                                * (p1.slice(s![..c]).to_owned() - p2.to_owned()).sum()
-                                * weight,
-                        )
-                    } else {
-                        None
-                    }
-                })
-                // Sum them together, here we use reduce with a base value of zero
-                .reduce(|| Array2::<f32>::zeros((num_params, 1)), |a, b| a + b),
+        // HWP = HWP * (HW1 - HW1) * HW1
+        let errs = steepest_descent_ic_t.clone()
+            * (Tensor::from_primitive(warped_im1_vals) - im2_gray.clone())
+            * Tensor::from_primitive(weights).unsqueeze_dim(2);
+        let dp: Tensor<B, 2> = hessian_inv.clone().matmul(
+            errs.sum_dim(0)
+                .sum_dim(1)
+                .reshape(Shape::new([num_params, 1])),
         );
-        let mapping_dp = Mapping::from_params(dp.clone().into_raw_vec());
+        let mapping_dp = Mapping::<B>::from_params(dp.clone().into_data().convert().value);
 
         // Update the parameters
-        params = Mapping::from_matrix(mapping.mat.dot(&mapping_dp.mat.inv()?), init_mapping.kind)
-            .get_params();
+        params = Mapping::<B>::from_tensor(
+            mapping.mat.matmul(mapping_dp.inverse().mat),
+            init_mapping.kind,
+        )
+        .get_params();
         params_history.push(params.clone());
 
         // Push back dp update, pop old one if deque is full
@@ -374,25 +367,24 @@ where
         dps.push_back(dp.clone());
 
         // Early exit if average dp is small
-        let avg_dp = &dps
-            .iter()
-            .fold(Array2::<f32>::zeros((num_params, 1)), |acc, e| acc + e)
-            / dps.len() as f32;
-        if Array2::<f32>::zeros((num_params, 1)).abs_diff_eq(&avg_dp, stop_early.unwrap_or(1e-3)) {
+        let avg_dp: Tensor<B, 2> = Tensor::stack::<3>(dps.clone().into(), 2)
+            .mean_dim(2)
+            .squeeze(2);
+
+        if avg_dp.abs().max().into_scalar().to_f32().unwrap() < stop_early.unwrap_or(1e-3) {
             break;
         }
     }
     pbar.finish_and_clear();
-
     Ok((Mapping::from_params(params).inverse(), params_history))
 }
 
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
-pub fn hierarchical_iclk<P>(
+pub fn hierarchical_iclk<P, B>(
     im1: &Image<P>,
     im2: &Image<P>,
-    init_mapping: Mapping,
+    init_mapping: Mapping<B>,
     im1_weights: Option<&GrayImage>,
     max_iters: Option<i32>,
     min_dimensions: (u32, u32),
@@ -400,13 +392,15 @@ pub fn hierarchical_iclk<P>(
     stop_early: Option<f32>,
     patience: Option<usize>,
     message: bool,
-) -> Result<(Mapping, HashMap<u32, Vec<Vec<f32>>>)>
+) -> Result<(Mapping<B>, HashMap<u32, Vec<Vec<f32>>>)>
 where
     P: Pixel + Send + Sync,
     <P as Pixel>::Subpixel: Send + Sync + 'static,
     <P as Pixel>::Subpixel: ValueInto<f32> + From<u8> + Clamp<f32>,
     f32: ValueFrom<<P as Pixel>::Subpixel> + From<<P as Pixel>::Subpixel>,
+    B: Backend,
 {
+    let device = &init_mapping.device();
     let im1_gray = grayscale(im1);
     let im2_gray = grayscale(im2);
 
@@ -438,12 +432,19 @@ where
         let params_history;
         let msg = format!("Matching scale 1/{:}", &current_scale);
         let msg = if message { Some(msg) } else { None };
+        let im1 = image_to_tensor3(im1.clone(), device);
+        let im2 = image_to_tensor3(im2.clone(), device);
+        let im2_grad = tensor_gradients(im2.clone());
+        let weights = weights
+            .as_ref()
+            .map(|w| image_to_tensor3::<Luma<u8>, B>(w.clone(), device).squeeze(2));
+
         (mapping, params_history) = iclk_grayscale(
             im1,
             im2,
-            gradients(im2),
+            im2_grad,
             mapping,
-            weights.as_ref(),
+            weights,
             max_iters,
             stop_early,
             patience,
@@ -463,45 +464,45 @@ where
     Ok((mapping, all_params_history))
 }
 
-/// Estimate pairwise registration using single level iclk
-#[allow(clippy::too_many_arguments)]
-pub fn pairwise_iclk(
-    frames: &Vec<GrayImage>,
-    init_mappings: &[Mapping],
-    iterations: i32,
-    early_stop: f32,
-    patience: usize,
-    message: Option<&str>,
-) -> Result<Vec<Mapping>> {
-    let pbar = get_pbar(frames.len() - 1, message);
+// /// Estimate pairwise registration using single level iclk
+// #[allow(clippy::too_many_arguments)]
+// pub fn pairwise_iclk<B: Backend>(
+//     frames: &Vec<GrayImage>,
+//     init_mappings: &[Mapping<B>],
+//     iterations: i32,
+//     early_stop: f32,
+//     patience: usize,
+//     message: Option<&str>,
+// ) -> Result<Vec<Mapping<B>>> {
+//     let pbar = get_pbar(frames.len() - 1, message);
 
-    // Iterate over sliding window of pairwise frames (in parallel!)
-    let mappings: Vec<Mapping> = frames
-        .par_windows(2)
-        .zip(init_mappings)
-        .map(|(window, init_mapping)| {
-            pbar.inc(1);
-            iclk_grayscale(
-                &window[0],
-                &window[1],
-                gradients(&window[1]),
-                init_mapping.clone(),
-                None,
-                Some(iterations),
-                Some(early_stop),
-                Some(patience),
-                None,
-            )
-            // Drop param_history
-            .map(|(mapping, _)| mapping)
-        })
-        // Collect to force reorder
-        .collect::<Result<Vec<_>>>()?;
+//     // Iterate over sliding window of pairwise frames (in parallel!)
+//     let mappings: Vec<Mapping<B>> = frames
+//         .par_windows(2)
+//         .zip(init_mappings)
+//         .map(|(window, init_mapping)| {
+//             pbar.inc(1);
+//             iclk_grayscale(
+//                 &window[0],
+//                 &window[1],
+//                 gradients(&window[1]),
+//                 init_mapping.clone(),
+//                 None,
+//                 Some(iterations),
+//                 Some(early_stop),
+//                 Some(patience),
+//                 None,
+//             )
+//             // Drop param_history
+//             .map(|(mapping, _)| mapping)
+//         })
+//         // Collect to force reorder
+//         .collect::<Result<Vec<_>>>()?;
 
-    // Return raw pairwise warps (N-1 in total)
-    pbar.finish_and_clear();
-    Ok(mappings)
-}
+//     // Return raw pairwise warps (N-1 in total)
+//     pbar.finish_and_clear();
+//     Ok(mappings)
+// }
 
 /// Given an image, return an image pyramid with the largest size first and halving the size
 /// every time until either the max-levels are reached or the minimum size is reached.

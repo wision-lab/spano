@@ -5,10 +5,13 @@ use burn_tensor::{Shape, Tensor};
 use image::Pixel;
 use imageproc::definitions::{Clamp, Image};
 use itertools::Itertools;
-
 use num_traits::ToPrimitive;
 
-use crate::{kernels::Backend, transforms::{image_to_tensor3, tensor3_to_image}, warps::Mapping};
+use crate::{
+    kernels::Backend,
+    transforms::{image_to_tensor3, tensor3_to_image},
+    warps::Mapping,
+};
 
 /// Computes normalized and clipped distance transform (bwdist) for rectangle that fills image.
 // #[cached(sync_writes = true)]
@@ -27,12 +30,13 @@ pub fn distance_transform<B: Backend, const D: usize>(
         (0.0, h as f32),
     ];
     let num_points = (w as i64) * (h as i64);
+    // TODO: Use modulo here once it's available. See: https://github.com/tracel-ai/burn/pull/1726
     let points: Tensor<B, 2> = Tensor::stack(
         vec![
             // Tensor::cat(vec![Tensor::arange(0..(w as i64), device); h], 0), // ~80ms
             // Tensor::from_floats(&(0..num_points).map(|i| (i as f32) % (w as f32)).collect::<Vec<_>>()[..], device), // ~ 18ms
             Tensor::arange(0..(w as i64), device)
-                .reshape(Shape::new([1, w]))
+                .unsqueeze_dim::<2>(0)
                 .repeat(0, h)
                 .flatten(0, 1)
                 .float(), // ~10ms
@@ -47,12 +51,11 @@ pub fn distance_transform<B: Backend, const D: usize>(
             .iter()
             .circular_tuple_windows()
             .map(|(p1, p2)| distance_to_line(*p1, *p2, q.clone()))
-            .fold(
-                Tensor::full(Shape::new([h * w, 1]), f32::INFINITY, device),
-                |a, b| a.min_pair(b),
-            )
+            .fold(Tensor::full([h * w, 1], f32::INFINITY, device), |a, b| {
+                a.min_pair(b)
+            })
     };
-    dist(points).reshape(Shape::new([h, w, 1]))
+    dist(points).reshape([h, w, 1])
 }
 
 /// Find distance to line defined by two points
@@ -120,13 +123,17 @@ where
             .expect("Canvas should have width and height");
         ((canvas_h.ceil() as usize, canvas_w.ceil() as usize), offset)
     };
-    let shifted_mappings: Vec<_> = mappings.iter().map(|m| m.transform(None, Some(offset.clone()))).collect();
+    let shifted_mappings: Vec<_> = mappings
+        .iter()
+        .map(|m| m.transform(None, Some(offset.clone())))
+        .collect();
 
     let mut output = B::float_zeros(Shape::new([canvas_h, canvas_w, c + 1]), device);
     let weights = distance_transform::<B, 3>(Shape::new(frame_size), device);
     B::blend_into_tensor3(&shifted_mappings[..], inputs, weights, &mut output);
     let canvas = Tensor::from_primitive(output);
-    let merged = canvas.clone().slice([0..canvas_h, 0..canvas_w, 0..c]) / canvas.slice([0..canvas_h, 0..canvas_w, c..c+1]);
+    let merged = canvas.clone().slice([0..canvas_h, 0..canvas_w, 0..c])
+        / canvas.slice([0..canvas_h, 0..canvas_w, c..c + 1]);
     Ok(merged)
 }
 
@@ -141,7 +148,7 @@ where
     f32: From<<P as Pixel>::Subpixel>,
     <P as Pixel>::Subpixel: Clamp<f32>,
     B::Device: Eq + Hash,
-    B: Backend
+    B: Backend,
 {
     let frames: Vec<_> = frames
         .iter()
