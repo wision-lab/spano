@@ -20,6 +20,7 @@ use itertools::izip;
 use ndarray::Ix2;
 use ndarray_linalg::solve::Inverse;
 use num_traits::ToPrimitive;
+use rayon::prelude::*;
 
 use crate::{
     kernels::Backend,
@@ -371,7 +372,7 @@ pub fn iclk_grayscale<B: Backend>(
             .mean_dim(2)
             .squeeze(2);
 
-        if avg_dp.abs().max().into_scalar().to_f32().unwrap() < stop_early.unwrap_or(1e-3) {
+        if avg_dp.abs().max().into_scalar().to_f32().unwrap() <= stop_early.unwrap_or(1e-3) {
             break;
         }
     }
@@ -464,45 +465,51 @@ where
     Ok((mapping, all_params_history))
 }
 
-// /// Estimate pairwise registration using single level iclk
-// #[allow(clippy::too_many_arguments)]
-// pub fn pairwise_iclk<B: Backend>(
-//     frames: &Vec<GrayImage>,
-//     init_mappings: &[Mapping<B>],
-//     iterations: i32,
-//     early_stop: f32,
-//     patience: usize,
-//     message: Option<&str>,
-// ) -> Result<Vec<Mapping<B>>> {
-//     let pbar = get_pbar(frames.len() - 1, message);
+/// Estimate pairwise registration using single level iclk
+#[allow(clippy::too_many_arguments)]
+pub fn pairwise_iclk<B: Backend>(
+    frames: &Vec<GrayImage>,
+    init_mappings: &[Mapping<B>],
+    iterations: i32,
+    early_stop: f32,
+    patience: usize,
+    message: Option<&str>,
+) -> Result<Vec<Mapping<B>>> {
+    let device = &init_mappings[0].device();
+    let pbar = get_pbar(frames.len() - 1, message);
 
-//     // Iterate over sliding window of pairwise frames (in parallel!)
-//     let mappings: Vec<Mapping<B>> = frames
-//         .par_windows(2)
-//         .zip(init_mappings)
-//         .map(|(window, init_mapping)| {
-//             pbar.inc(1);
-//             iclk_grayscale(
-//                 &window[0],
-//                 &window[1],
-//                 gradients(&window[1]),
-//                 init_mapping.clone(),
-//                 None,
-//                 Some(iterations),
-//                 Some(early_stop),
-//                 Some(patience),
-//                 None,
-//             )
-//             // Drop param_history
-//             .map(|(mapping, _)| mapping)
-//         })
-//         // Collect to force reorder
-//         .collect::<Result<Vec<_>>>()?;
+    // Iterate over sliding window of pairwise frames (in parallel!)
+    let mappings: Vec<Mapping<B>> = frames
+        .par_windows(2)
+        .zip(init_mappings)
+        .map(|(window, init_mapping)| {
+            pbar.inc(1);
 
-//     // Return raw pairwise warps (N-1 in total)
-//     pbar.finish_and_clear();
-//     Ok(mappings)
-// }
+            let im1 = image_to_tensor3(window[0].clone(), device);
+            let im2 = image_to_tensor3(window[1].clone(), device);
+            let im2_grad = tensor_gradients(im2.clone());
+
+            iclk_grayscale(
+                im1,
+                im2,
+                im2_grad,
+                init_mapping.clone(),
+                None,
+                Some(iterations),
+                Some(early_stop),
+                Some(patience),
+                None,
+            )
+            // Drop param_history
+            .map(|(mapping, _)| mapping)
+        })
+        // Collect to force reorder
+        .collect::<Result<Vec<_>>>()?;
+
+    // Return raw pairwise warps (N-1 in total)
+    pbar.finish_and_clear();
+    Ok(mappings)
+}
 
 /// Given an image, return an image pyramid with the largest size first and halving the size
 /// every time until either the max-levels are reached or the minimum size is reached.
