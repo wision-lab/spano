@@ -14,7 +14,7 @@ use image::{
 use imageproc::{
     definitions::{Clamp, Image},
     filter::filter3x3,
-    gradients::{HORIZONTAL_SCHARR, VERTICAL_SCHARR, HORIZONTAL_SOBEL, VERTICAL_SOBEL},
+    gradients::{HORIZONTAL_SCHARR, HORIZONTAL_SOBEL, VERTICAL_SCHARR, VERTICAL_SOBEL},
 };
 use itertools::izip;
 use ndarray::Ix2;
@@ -32,7 +32,7 @@ use crate::{
 /// Compute image gradients using Scharr operator.
 /// Input is expected to be grayscale, HW1 format.
 /// Returned (dx, dy) pair as HxWx1 tensors.
-/// 
+///
 /// WARNING: Incorrect boundary conditions! It's padded with zeros, should be continuity.
 pub fn tensor_gradients_<B: Backend>(img: Tensor<B, 3>) -> (Tensor<B, 3>, Tensor<B, 3>) {
     // Input is HWC, needs to be 1CHW for conv to work.
@@ -145,7 +145,7 @@ pub fn iclk_grayscale<B: Backend>(
 ) -> Result<(Mapping<B>, Vec<Vec<f32>>)> {
     // Initialize values
     let mut params = init_mapping.inverse().get_params();
-    let num_params = params.len();
+    let num_params = init_mapping.kind.num_params();
     let [h, w, c] = im2_gray.dims();
 
     let device = &init_mapping.device();
@@ -319,7 +319,7 @@ pub fn iclk_grayscale<B: Backend>(
 
     // Tracking variables
     let pbar = get_pbar(max_iters.unwrap_or(250) as usize, message);
-    let mut params_history = vec![];
+    let mut params_history: Vec<Vec<f32>> = vec![];
     params_history.push(params.clone());
     let mut dps: VecDeque<_> = VecDeque::with_capacity(patience.unwrap_or(10));
 
@@ -328,7 +328,7 @@ pub fn iclk_grayscale<B: Backend>(
         pbar.set_position(i as u64);
 
         // Create mapping from params and use it to warp img1 into img2's coordinate frame
-        let mapping = Mapping::<B>::from_params(params).to_device(device);
+        let mapping = Mapping::<B>::from_params(params.clone());
         mapping.warp_tensor3_into(im1_gray.clone(), &mut warped_im1gray, &mut valid, None);
 
         let (warped_im1_vals, weights) = if has_weights {
@@ -352,7 +352,7 @@ pub fn iclk_grayscale<B: Backend>(
                 .sum_dim(1)
                 .reshape(Shape::new([num_params, 1])),
         );
-        let mapping_dp = Mapping::<B>::from_params(dp.clone().into_data().convert().value);
+        let mapping_dp = Mapping::<B>::from_params(dp.clone().to_data().convert().value);
 
         // Update the parameters
         params = Mapping::<B>::from_tensor(
@@ -475,9 +475,9 @@ pub fn pairwise_iclk<B: Backend>(
     early_stop: f32,
     patience: usize,
     message: Option<&str>,
-) -> Result<Vec<Mapping<B>>> 
+) -> Result<Vec<Mapping<B>>>
 where
-    Tensor<B, 3>: Sync
+    Tensor<B, 3>: Sync,
 {
     let pbar = get_pbar(frames.len() - 1, message);
 

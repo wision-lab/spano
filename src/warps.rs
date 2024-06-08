@@ -1,5 +1,6 @@
 use burn_tensor::{
-    ops::{BoolTensor, FloatTensor}, Bool, Shape, Tensor
+    ops::{BoolTensor, FloatTensor},
+    Bool, ElementConversion, Shape, Tensor,
 };
 use image::Pixel;
 use imageproc::definitions::{Clamp, Image};
@@ -9,6 +10,7 @@ use ndarray_interp::interp1d::{CubicSpline, Interp1DBuilder, Linear};
 use ndarray_linalg::solve::Inverse;
 use strum::{EnumCount, VariantArray};
 use strum_macros::{Display, EnumString};
+use derive_more;
 
 use crate::{
     kernels::Backend,
@@ -40,7 +42,8 @@ impl TransformationType {
 }
 
 // #[pyclass]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, derive_more::Display)]
+#[display(fmt = "({}, {})", mat, kind)]
 pub struct Mapping<B: Backend> {
     pub mat: Tensor<B, 2>,
     pub kind: TransformationType,
@@ -208,6 +211,47 @@ impl<B: Backend> Mapping<B> {
         B::warp_into_tensor3(self.clone(), data, out, valid, background);
     }
 
+    // pub fn from_params(params: Tensor<B, 1>) -> Self {
+    //     let device = &params.device();
+    //     let eye = Tensor::eye(3, device);
+    //     let zeros = Tensor::<B, 2>::zeros([3, 3], device);
+    //     let (mat, kind) = match &params.dims()[0] {
+    //         // Identity
+    //         0 => (eye, TransformationType::Identity),
+
+    //         // Translations
+    //         2 => {
+    //             let mat = eye.slice_assign([0..2, 2..3], params.unsqueeze_dim(1));
+    //             (mat, TransformationType::Translational)
+    //         }
+
+    //         // Affine Transforms
+    //         6 => {
+    //             let top = params.reshape(Shape::new([3, 2])).transpose();
+    //             (
+    //                 zeros.slice_assign([0..2, 0..3], top) + eye,
+    //                 TransformationType::Affine,
+    //             )
+    //         }
+
+    //         // Projective Transforms
+    //         8 => {
+    //             let top = params
+    //                 .clone()
+    //                 .slice([0..6])
+    //                 .reshape(Shape::new([3, 2]))
+    //                 .transpose();
+    //             let btm = params.slice([6..8]).unsqueeze_dim(0);
+    //             let mat = zeros
+    //                 .slice_assign([0..2, 0..3], top)
+    //                 .slice_assign([2..3, 0..2], btm);
+    //             (mat + eye, TransformationType::Projective)
+    //         }
+    //         _ => panic!("Unknown mapping kind."),
+    //     };
+    //     Self::from_tensor(mat, kind)
+    // }
+
     /// Given a list of transform parameters, return the Mapping that would transform a
     /// source point to its destination. The type of mapping depends on the number of params (DoF).
     // #[staticmethod]
@@ -237,8 +281,9 @@ impl<B: Backend> Mapping<B> {
             _ => panic!(),
         };
 
-        let mat = Array2::from_shape_vec((3, 3), full_params).unwrap();
-        Self::from_matrix(mat, kind)
+        let mat = Tensor::<B, 1>::from_floats(&full_params[..], &Default::default())
+            .reshape(Shape::new([3, 3]));
+        Self::from_tensor(mat, kind)
     }
 
     /// Return a purely scaling (affine) Mapping.
@@ -371,17 +416,51 @@ impl<B: Backend> Mapping<B> {
     /// Get minimum number of parameters that describe the Mapping.
     // #[pyo3(text_signature = "(self) -> List[float]")]
     pub fn get_params(&self) -> Vec<f32> {
-        let mat = tensor_to_array(self.mat.clone())
-            .into_dimensionality::<Ix2>()
-            .unwrap();
-        let p = (&mat.clone() / mat[(2, 2)]).into_raw_vec();
+        let p = self.get_params_full();
         match &self.kind {
             TransformationType::Identity => vec![],
-            TransformationType::Translational => vec![p[2], p[5]],
-            TransformationType::Affine => vec![p[0] - 1.0, p[3], p[1], p[4] - 1.0, p[2], p[5]],
-            TransformationType::Projective => {
-                vec![p[0] - 1.0, p[3], p[1], p[4] - 1.0, p[2], p[5], p[6], p[7]]
+            TransformationType::Translational => p[5..7].into(),
+            TransformationType::Affine => p[..7].into(),
+            TransformationType::Projective => p,
+            TransformationType::Unknown => panic!("Transformation cannot be unknown!"),
+        }
+    }
+
+    pub fn get_params_(&self) -> Tensor<B, 1> {
+        let device = &self.device();
+        let d = self.mat.clone().slice([2..3, 2..3]).into_scalar();
+        // match &self.kind {
+        //     TransformationType::Identity => Tensor::from_floats([], device),
+        //     TransformationType::Translational => {
+        //         self.mat.clone().slice([0..2, 2..3]).squeeze(1) / d
+        //     },
+        //     TransformationType::Affine => {
+        //         let eye = Tensor::eye(3, device);
+        //         (self.mat.clone() - eye).slice([0..2, 0..3]).transpose().flatten(0, 1) / d
+        //     },
+        //     TransformationType::Projective => {
+        //         let eye = Tensor::eye(3, device);
+        //         Tensor::cat(
+        //             vec![
+        //                 (self.mat.clone() - eye).slice([0..2, 0..3]).transpose().flatten(0, 1),
+        //                 self.mat.clone().slice([2..3, 0..2]).squeeze(0)
+        //             ], 0
+        //         ) / d
+        //     }
+        //     TransformationType::Unknown => panic!("Transformation cannot be unknown!"),
+        // }
+
+        let eye = Tensor::eye(3, device);
+        let params = (self.mat.clone() / d - eye)
+            .flatten(0, 1)
+            .gather(0, Tensor::from_ints([0, 3, 1, 4, 2, 5, 6, 7], device));
+        match &self.kind {
+            TransformationType::Identity => Tensor::from_floats([], device),
+            TransformationType::Translational => {
+                self.mat.clone().slice([0..2, 2..3]).squeeze(1) / d
             }
+            TransformationType::Affine => params.slice([0..6]),
+            TransformationType::Projective => params,
             TransformationType::Unknown => panic!("Transformation cannot be unknown!"),
         }
     }
@@ -396,9 +475,59 @@ impl<B: Backend> Mapping<B> {
         vec![p[0] - 1.0, p[3], p[1], p[4] - 1.0, p[2], p[5], p[6], p[7]]
     }
 
+    pub fn get_inverse_params(&self) -> Vec<f32> {
+        let p = self.get_inverse_params_full();
+        match &self.kind {
+            TransformationType::Identity => vec![],
+            TransformationType::Translational => p[5..7].into(),
+            TransformationType::Affine => p[..7].into(),
+            TransformationType::Projective => p,
+            TransformationType::Unknown => panic!("Transformation cannot be unknown!"),
+        }
+    }
+
+    pub fn get_inverse_params_full(&self) -> Vec<f32> {
+        let p = self.get_params_full();
+
+        let x0 = p[0]*p[3];
+        let x1 = p[1]*p[2];
+        let x2 = 1.0/(p[0] + p[3] + x0 - x1 + 1.0);
+        let x3 = -x0 + x1;
+
+        vec![
+            x2*(-p[0] - p[5]*p[7] + x3),
+            x2*(-p[1] + p[5]*p[6]),
+            x2*(-p[2] + p[4]*p[7]),
+            x2*(-p[3] - p[4]*p[6] + x3),
+            x2*(p[2]*p[5] - p[3]*p[4] - p[4]),
+            x2*(-p[0]*p[5] + p[1]*p[4] - p[5]),
+            x2*(p[1]*p[7] - p[3]*p[6] - p[6]), 
+            x2*(-p[0]*p[7] + p[2]*p[6] - p[7])
+        ]
+    }
+
     /// Invert the mapping by creating new mapping with inverse matrix.
     // #[pyo3(text_signature = "(self) -> Self")]
     pub fn inverse(&self) -> Self {
+        // import sympy as sp
+        // p1,p2,p3,p4,p5,p6,p7,p8 = sp.symbols("p1,p2,p3,p4,p5,p6,p7,p8", real=True)
+        // M = sp.Matrix(3,3, [p1+1,p3,p5,p2,p4+1,p6,p7,p8,1])
+        // M_inv = sp.simplify(M.inv() / M.inv()[-1, -1])
+        // sp.cse(M_inv)
+
+        // ----------------------------------------------------
+        // let eye = Tensor::eye(3, &self.device());
+        // let [p1,p3,p5,p2,p4,p6,p7,p8,_]: [f32] = (self.mat.clone() - eye).flatten::<1>(0, 1).into_data().convert().value[..] else {unreachable!()};
+        // let x0 = p4 + 1.0;
+        // let x1 = 1.0 / (p1*p4 + p1 - p2*p3 + x0);
+        // let mat = Tensor::from_floats(
+        //     [
+        //         [       x1*(-p6*p8 + x0),           x1*(-p3 + p5*p8),  x1*(p3*p6 - p4*p5 - p5)],
+        //         [       x1*(-p2 + p6*p7),      x1*(p1 - p5*p7 + 1.0), x1*(-p1*p6 + p2*p5 - p6)],
+        //         [x1*(p2*p8 - p4*p7 - p7), x1*(-p1*p8 + p3*p7 - p8),                        1.0]
+        //     ], &self.device()
+        // );
+        // ----------------------------------------------------
         // TODO: Is this really necessary?!
         let mat = array_to_tensor(
             tensor_to_array(self.mat.clone())
@@ -413,6 +542,8 @@ impl<B: Backend> Mapping<B> {
             mat,
             kind: self.kind,
         }
+        // ----------------------------------------------------
+        // Self::from_params(self.get_inverse_params())
     }
 
     /// Upgrade Type of warp if it's not unknown, i.e: Identity -> Translational -> Affine -> Projective

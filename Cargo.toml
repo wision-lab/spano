@@ -41,12 +41,13 @@ strum_macros = "0.26.2"
 strum = { version = "0.26.2", features = ["derive"] }
 numpy = "0.15.1"
 cached = "0.49.3"
-burn = { version = "0.13.2", default-features = false, features = ["wgpu", "autotune", "template", "fusion"] }
+burn = { version = "0.13.2", features = ["wgpu", "autotune", "template", "fusion"] }
 bytemuck = "1.16.0"
 burn-tensor = "0.13.2"
 derive-new = "0.6.0"
 burn-jit = "0.13.2"
 burn-ndarray = "0.13.2"
+derive_more = "0.99.17"
 
 
 [package.metadata.cargo-machete]

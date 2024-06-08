@@ -4,7 +4,7 @@ use burn::{
 };
 use burn_jit::kernel::into_contiguous;
 use burn_tensor::{Shape, Tensor};
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use image::{
     imageops::{resize, FilterType::CatmullRom},
     io::Reader as ImageReader,
@@ -20,9 +20,9 @@ use spano::{
     lk::iclk,
     warps::{Mapping, TransformationType},
 };
-type B = burn::backend::wgpu::JitBackend<WgpuRuntime<AutoGraphicsApi, f32, i32>>;
 
 fn benchmark_warp_tensor3(c: &mut Criterion) {
+    type B = burn::backend::wgpu::JitBackend<WgpuRuntime<AutoGraphicsApi, f32, i32>>;
     let device = &Default::default();
 
     let mapping = Mapping::<B>::from_matrix(
@@ -65,6 +65,7 @@ fn benchmark_warp_tensor3(c: &mut Criterion) {
 }
 
 pub fn benchmark_distance_transform(c: &mut Criterion) {
+    type B = burn::backend::wgpu::JitBackend<WgpuRuntime<AutoGraphicsApi, f32, i32>>;
     let device = &Default::default();
 
     c.bench_function("distance_transform", |b| {
@@ -74,7 +75,44 @@ pub fn benchmark_distance_transform(c: &mut Criterion) {
     });
 }
 
+pub fn benchmark_mapping_from_params(c: &mut Criterion) {
+    type B = burn::backend::wgpu::JitBackend<WgpuRuntime<AutoGraphicsApi, f32, i32>>;
+    let params = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+
+    c.bench_function("mapping_from_params", |b| {
+        b.iter(|| {
+            let _ = Mapping::<B>::from_params(black_box(params.clone()));
+        })
+    });
+}
+
+pub fn benchmark_mapping_get_params(c: &mut Criterion) {
+    type B = burn::backend::wgpu::JitBackend<WgpuRuntime<AutoGraphicsApi, f32, i32>>;
+    let params = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    let map = Mapping::<B>::from_params(params);
+
+    c.bench_with_input(BenchmarkId::new("mapping_get_params", map.clone()), &map.clone(), |b, m| {
+        b.iter(|| {
+            let _ = m.get_params();
+        })
+    });
+}
+
+pub fn benchmark_mapping_inverse(c: &mut Criterion) {
+    type B = burn::backend::wgpu::JitBackend<WgpuRuntime<AutoGraphicsApi, f32, i32>>;
+    let params = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    let map = Mapping::<B>::from_params(params);
+
+    c.bench_with_input(BenchmarkId::new("mapping_inverse", map.clone()), &map.clone(), |b, m| {
+        b.iter(|| {
+            let _ = m.inverse();
+        })
+    });
+}
+
 pub fn benchmark_iclk(c: &mut Criterion) {
+    type B = burn::backend::wgpu::JitBackend<WgpuRuntime<AutoGraphicsApi, f32, i32>>;
+
     let img_src = ImageReader::open("tests/source.png")
         .unwrap()
         .decode()
@@ -151,6 +189,9 @@ criterion_group! {
     targets =
         benchmark_warp_tensor3,
         benchmark_distance_transform,
+        benchmark_mapping_from_params,
+        benchmark_mapping_get_params,
+        benchmark_mapping_inverse,
         benchmark_iclk,
         benchmark_merge_images
 }
@@ -159,7 +200,10 @@ criterion_group! {
 criterion_group! {
     benches,
     benchmark_warp_tensor3,
+    benchmark_mapping_from_params,
+    benchmark_mapping_get_params,
     benchmark_distance_transform,
+    benchmark_mapping_inverse,
     benchmark_iclk,
     benchmark_merge_images
 }

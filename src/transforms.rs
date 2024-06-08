@@ -74,7 +74,10 @@ pub fn array_to_tensor<B: Backend, const D: usize>(
     Tensor::<B, D>::from_data(arr.into_data().convert(), device)
 }
 
-pub fn apply_tensor_transforms<B: Backend>(frame: Tensor<B, 2>, transform: &[Transform]) -> Tensor<B, 2> {
+pub fn apply_tensor_transforms<B: Backend>(
+    frame: Tensor<B, 2>,
+    transform: &[Transform],
+) -> Tensor<B, 2> {
     // Note: if we don't shadow `frame` as a mut, we cannot override it in the loop
     let mut frame = frame;
 

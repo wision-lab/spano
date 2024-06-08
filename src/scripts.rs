@@ -5,18 +5,22 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use burn::backend::wgpu::{AutoGraphicsApi, WgpuRuntime};
+use burn_tensor::{
+    module::interpolate,
+    ops::{InterpolateMode, InterpolateOptions},
+    Tensor,
+};
 use image::{
-    imageops::{resize, FilterType}, io::Reader as ImageReader, Luma, Rgb
+    imageops::{resize, FilterType},
+    io::Reader as ImageReader,
+    Luma, Rgb,
 };
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use ndarray::{Array1, Axis, Slice};
 use photoncube2video::{
     cube::PhotonCube,
     signals::DeferedSignal,
-    transforms::{
-        interpolate_where_mask, process_colorspad,
-        unpack_single,
-    },
+    transforms::{interpolate_where_mask, process_colorspad, unpack_single},
 };
 use pyo3::prelude::*;
 use rayon::{
@@ -24,15 +28,15 @@ use rayon::{
     slice::ParallelSlice,
 };
 use tempfile::tempdir;
-use burn_tensor::{module::interpolate, ops::{InterpolateMode, InterpolateOptions}, Tensor};
 
 use crate::{
     // blend::merge_images,
-    blend::blend_tensors3, cli::{Cli, Commands, LKArgs, Parser}, lk::{
-        hierarchical_iclk,
-        iclk,
-        pairwise_iclk,
-    }, transforms::{apply_tensor_transforms, array_to_tensor, tensor3_to_image}, utils::{animate_hierarchical_warp, animate_warp, stabilized_video}, warps::Mapping
+    blend::blend_tensors3,
+    cli::{Cli, Commands, LKArgs, Parser},
+    lk::{hierarchical_iclk, iclk, pairwise_iclk},
+    transforms::{apply_tensor_transforms, array_to_tensor, tensor3_to_image},
+    utils::{animate_hierarchical_warp, animate_warp, stabilized_video},
+    warps::Mapping,
 };
 
 type B = burn::backend::wgpu::JitBackend<WgpuRuntime<AutoGraphicsApi, f32, i32>>;

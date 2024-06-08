@@ -6,13 +6,12 @@ use std::{
 
 use anyhow::Result;
 use burn_tensor::Tensor;
-use conv::ValueInto;
 use image::{
     imageops::{resize, FilterType},
     io::Reader as ImageReader,
-    EncodableLayout, Pixel, PixelWithColorType, Primitive, Rgb,
+    EncodableLayout, Pixel, PixelWithColorType, Rgb,
 };
-use imageproc::definitions::{Clamp, Image};
+use imageproc::definitions::Clamp;
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
 use photoncube2video::{
