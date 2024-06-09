@@ -91,11 +91,15 @@ pub fn benchmark_mapping_get_params(c: &mut Criterion) {
     let params = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
     let map = Mapping::<B>::from_params(params);
 
-    c.bench_with_input(BenchmarkId::new("mapping_get_params", map.clone()), &map.clone(), |b, m| {
-        b.iter(|| {
-            let _ = m.get_params();
-        })
-    });
+    c.bench_with_input(
+        BenchmarkId::new("mapping_get_params", map.clone()),
+        &map.clone(),
+        |b, m| {
+            b.iter(|| {
+                let _ = m.get_params();
+            })
+        },
+    );
 }
 
 pub fn benchmark_mapping_inverse(c: &mut Criterion) {
@@ -103,11 +107,15 @@ pub fn benchmark_mapping_inverse(c: &mut Criterion) {
     let params = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
     let map = Mapping::<B>::from_params(params);
 
-    c.bench_with_input(BenchmarkId::new("mapping_inverse", map.clone()), &map.clone(), |b, m| {
-        b.iter(|| {
-            let _ = m.inverse();
-        })
-    });
+    c.bench_with_input(
+        BenchmarkId::new("mapping_inverse", map.clone()),
+        &map.clone(),
+        |b, m| {
+            b.iter(|| {
+                let _ = m.inverse();
+            })
+        },
+    );
 }
 
 pub fn benchmark_iclk(c: &mut Criterion) {

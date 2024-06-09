@@ -351,16 +351,16 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
                         let img = blend_tensors3(
                             &Mapping::with_respect_to_idx(maps.to_vec(), 0.5),
                             frames,
-                            Some((w as usize, h as usize)),
+                            Some((h, w)),
                         ).unwrap();
-
+                        
                         interpolate(
                             img.permute([2, 0, 1]).unsqueeze_dim(0),
                             [
                                 (h as f32 / downscale as f32).round() as usize,
                                 (w as f32 / downscale as f32).round() as usize,
                             ],
-                            InterpolateOptions::new(InterpolateMode::Bicubic)
+                            InterpolateOptions::new(InterpolateMode::Bilinear)
                         ).squeeze::<3>(0).squeeze::<2>(0).unsqueeze_dim::<3>(2)
                     })
                     .collect();

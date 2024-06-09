@@ -12,7 +12,7 @@ pub mod warps;
 
 use pyo3::prelude::*;
 
-use crate::{scripts::__pyo3_get_function_cli_entrypoint, warps::Mapping};
+use crate::scripts::__pyo3_get_function_cli_entrypoint;
 
 #[pymodule]
 fn spano(_py: Python<'_>, m: &PyModule) -> PyResult<()> {

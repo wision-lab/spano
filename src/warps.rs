@@ -1,7 +1,8 @@
 use burn_tensor::{
     ops::{BoolTensor, FloatTensor},
-    Bool, ElementConversion, Shape, Tensor,
+    Bool, Shape, Tensor,
 };
+use derive_more;
 use image::Pixel;
 use imageproc::definitions::{Clamp, Image};
 use itertools::chain;
@@ -10,7 +11,6 @@ use ndarray_interp::interp1d::{CubicSpline, Interp1DBuilder, Linear};
 use ndarray_linalg::solve::Inverse;
 use strum::{EnumCount, VariantArray};
 use strum_macros::{Display, EnumString};
-use derive_more;
 
 use crate::{
     kernels::Backend,
@@ -181,8 +181,8 @@ impl<B: Backend> Mapping<B> {
         let (h, w) = out_size;
         let [_, _, c] = data.dims();
         let device = &data.device();
-        let mut out = B::float_zeros(Shape::new([h, w, c]), &device);
-        let mut valid = B::bool_empty(Shape::new([h, w]), &device);
+        let mut out = B::float_zeros(Shape::new([h, w, c]), device);
+        let mut valid = B::bool_empty(Shape::new([h, w]), device);
 
         self.warp_tensor3_into(data, &mut out, &mut valid, background);
         (Tensor::from_primitive(out), Tensor::from_primitive(valid))
@@ -489,20 +489,20 @@ impl<B: Backend> Mapping<B> {
     pub fn get_inverse_params_full(&self) -> Vec<f32> {
         let p = self.get_params_full();
 
-        let x0 = p[0]*p[3];
-        let x1 = p[1]*p[2];
-        let x2 = 1.0/(p[0] + p[3] + x0 - x1 + 1.0);
+        let x0 = p[0] * p[3];
+        let x1 = p[1] * p[2];
+        let x2 = 1.0 / (p[0] + p[3] + x0 - x1 + 1.0);
         let x3 = -x0 + x1;
 
         vec![
-            x2*(-p[0] - p[5]*p[7] + x3),
-            x2*(-p[1] + p[5]*p[6]),
-            x2*(-p[2] + p[4]*p[7]),
-            x2*(-p[3] - p[4]*p[6] + x3),
-            x2*(p[2]*p[5] - p[3]*p[4] - p[4]),
-            x2*(-p[0]*p[5] + p[1]*p[4] - p[5]),
-            x2*(p[1]*p[7] - p[3]*p[6] - p[6]), 
-            x2*(-p[0]*p[7] + p[2]*p[6] - p[7])
+            x2 * (-p[0] - p[5] * p[7] + x3),
+            x2 * (-p[1] + p[5] * p[6]),
+            x2 * (-p[2] + p[4] * p[7]),
+            x2 * (-p[3] - p[4] * p[6] + x3),
+            x2 * (p[2] * p[5] - p[3] * p[4] - p[4]),
+            x2 * (-p[0] * p[5] + p[1] * p[4] - p[5]),
+            x2 * (p[1] * p[7] - p[3] * p[6] - p[6]),
+            x2 * (-p[0] * p[7] + p[2] * p[6] - p[7]),
         ]
     }
 

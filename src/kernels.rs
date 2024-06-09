@@ -195,7 +195,7 @@ impl<G: GraphicsApi, F: FloatElement, I: IntElement> Backend for JitBackend<Wgpu
         let cube_count = WorkGroup::new(cubes_needed_in_x, cubes_needed_in_y, cubes_needed_in_z);
 
         // Main loop where each frame is warped and blended onto buffer
-        for (input, map) in inputs.into_iter().zip(mappings) {
+        for (input, map) in inputs.iter().zip(mappings) {
             // Get linear blending weights and concatenate them to the input as last channel
             let input = Tensor::cat(vec![input.clone(), weights.clone()], 2);
 

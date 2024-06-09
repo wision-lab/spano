@@ -56,8 +56,8 @@ pub fn tensor_gradients_<B: Backend>(img: Tensor<B, 3>) -> (Tensor<B, 3>, Tensor
     conv.weight = Param::initialized(ParamId::new(), weights);
 
     let grad = conv.forward(img).squeeze(0).permute([1, 2, 0]);
-    let grad_x = grad.clone().slice([0..(h as usize), 0..(w as usize), 0..1]);
-    let grad_y = grad.clone().slice([0..(h as usize), 0..(w as usize), 1..2]);
+    let grad_x = grad.clone().slice([0..h, 0..w, 0..1]);
+    let grad_y = grad.clone().slice([0..h, 0..w, 1..2]);
     (grad_x, grad_y)
 }
 
@@ -504,7 +504,10 @@ where
                 None,
             )
             // Drop param_history
-            .map(|(mapping, _)| mapping)
+            .map(|(mapping, _)| {
+                // println!("{:}", mapping);
+                mapping
+            })
         })
         // Collect to force reorder
         .collect::<Result<Vec<_>>>()?;

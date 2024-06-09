@@ -13,7 +13,8 @@ use crate::{
     warps::Mapping,
 };
 
-/// Computes normalized and clipped distance transform (bwdist) for rectangle that fills image.
+/// Computes distance transform (bwdist) for rectangle that fills image.
+/// Note: This is not normalized, and border pixels have a bwdist of 1.
 // #[cached(sync_writes = true)]
 pub fn distance_transform<B: Backend, const D: usize>(
     shape: Shape<D>,
@@ -29,48 +30,62 @@ pub fn distance_transform<B: Backend, const D: usize>(
         (w as f32, h as f32),
         (0.0, h as f32),
     ];
-    let num_points = (w as i64) * (h as i64);
-    // TODO: Use modulo here once it's available. See: https://github.com/tracel-ai/burn/pull/1726
-    let points: Tensor<B, 2> = Tensor::stack(
-        vec![
-            // Tensor::cat(vec![Tensor::arange(0..(w as i64), device); h], 0), // ~80ms
-            // Tensor::from_floats(&(0..num_points).map(|i| (i as f32) % (w as f32)).collect::<Vec<_>>()[..], device), // ~ 18ms
-            Tensor::arange(0..(w as i64), device)
-                .unsqueeze_dim::<2>(0)
-                .repeat(0, h)
-                .flatten(0, 1)
-                .float(), // ~10ms
-            Tensor::arange(0..num_points, device)
-                .div_scalar(w as u32)
-                .float(),
-        ],
-        1,
-    );
-    let dist = |q: Tensor<B, 2>| {
+    let xs: Tensor<B, 2> = Tensor::arange(0..(w as i64), device)
+        .unsqueeze_dim::<2>(0)
+        .repeat(0, h)
+        .float();
+    let ys: Tensor<B, 2> = Tensor::arange(0..(h as i64), device)
+        .unsqueeze_dim::<2>(1)
+        .repeat(1, w)
+        .float();
+    let points: Tensor<B, 3> = Tensor::stack(vec![xs, ys], 2);
+    let dist = |q: Tensor<B, 3>| {
         corners
             .iter()
             .circular_tuple_windows()
             .map(|(p1, p2)| distance_to_line(*p1, *p2, q.clone()))
-            .fold(Tensor::full([h * w, 1], f32::INFINITY, device), |a, b| {
+            .fold(Tensor::full([h, w, 1], f32::INFINITY, device), |a, b| {
                 a.min_pair(b)
             })
     };
-    dist(points).reshape([h, w, 1])
+    dist(points) + 1.0
 }
 
 /// Find distance to line defined by two points
+/// Any tensor input shaper is allowed, provided the last dimension has size 2, for x and y components.
 /// See: https://en.wikipedia.org/wiki/Distance_from_a_point_to_a_line
-pub fn distance_to_line<B: Backend>(
+pub fn distance_to_line<B: Backend, const D: usize>(
     p1: (f32, f32),
     p2: (f32, f32),
-    query: Tensor<B, 2>,
-) -> Tensor<B, 2> {
+    query: Tensor<B, D>,
+) -> Tensor<B, D> {
+    let dims = query.dims();
+    assert_eq!(dims[dims.len() - 1], 2);
+
     let (x1, y1) = p1;
     let (x2, y2) = p2;
-
-    let num_points = query.dims()[0];
-    let x0 = query.clone().slice([0..num_points, 0..1]);
-    let y0 = query.clone().slice([0..num_points, 1..2]);
+    let x_slice: Vec<_> = dims
+        .iter()
+        .rev()
+        .skip(1)
+        .rev()
+        .map(|&i| 0..i)
+        .chain([0..1])
+        .collect();
+    let y_slice: Vec<_> = dims
+        .iter()
+        .rev()
+        .skip(1)
+        .rev()
+        .map(|&i| 0..i)
+        .chain([1..2])
+        .collect();
+    let x0 = query
+        .clone()
+        .slice::<D>(x_slice.try_into().expect("slice with incorrect length"));
+    let y0 = query
+        .clone()
+        .slice::<D>(y_slice.try_into().expect("slice with incorrect length"));
 
     let out = ((-y0 + y1) * (x2 - x1) - (-x0 + x1) * (y2 - y1)).abs();
     out / ((x2 - x1).powf(2.0) + (y2 - y1).powf(2.0)).sqrt()

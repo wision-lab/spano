@@ -5,8 +5,7 @@ use imageproc::definitions::Clamp;
 use ndarray::{ArrayBase, Dim, IxDynImpl, OwnedRepr};
 use num_traits::ToPrimitive;
 use photoncube2video::transforms::Transform;
-
-use crate::kernels::Backend;
+use burn_tensor::backend::Backend;
 
 /// Normalize tensor between 0-1
 pub fn normalize<B: Backend, const D: usize>(tensor: Tensor<B, D>) -> Tensor<B, D> {
@@ -23,6 +22,7 @@ where
 {
     let [height, width, _] = tensor.dims();
     let values = tensor
+        .flatten::<1>(0, 2)
         .to_data()
         .value
         .into_iter()
@@ -52,7 +52,7 @@ where
     let raw = im.into_raw();
     Tensor::<B, 1>::from_floats(
         &raw.into_iter().map(|i| i.into()).collect::<Vec<_>>()[..],
-        &device,
+        device,
     )
     .reshape(shape)
 }
@@ -81,12 +81,14 @@ pub fn apply_tensor_transforms<B: Backend>(
     // Note: if we don't shadow `frame` as a mut, we cannot override it in the loop
     let mut frame = frame;
 
+    // TODO: File a bug report, flip doesn't seem to work after a transpose?
+    // See: https://github.com/tracel-ai/burn/issues/1099
     for t in transform.iter() {
         frame = match t {
             Transform::Identity => continue,
-            Transform::Rot90 => frame.transpose().flip([1]),
+            Transform::Rot90 => frame.flip([0]).transpose(),
             Transform::Rot180 => frame.flip([0, 1]),
-            Transform::Rot270 => frame.transpose().flip([0]),
+            Transform::Rot270 => frame.flip([1]).transpose(),
             Transform::FlipUD => frame.flip([0]),
             Transform::FlipLR => frame.flip([1]),
         };
@@ -128,15 +130,21 @@ pub fn bmm<B: Backend>(a: Tensor<B, 3>, b: Tensor<B, 3>) -> Tensor<B, 3> {
 mod test_transforms {
     use approx::assert_relative_eq;
     use burn::backend::wgpu::{AutoGraphicsApi, WgpuRuntime};
+    use burn_tensor::{backend::Backend, Tensor};
     use ndarray::{array, Ix2};
+    use photoncube2video::transforms::Transform;
 
-    use super::array_to_tensor;
+    use super::{apply_tensor_transforms, array_to_tensor};
     use crate::transforms::tensor_to_array;
+    type B = burn::backend::wgpu::JitBackend<WgpuRuntime<AutoGraphicsApi, f32, i32>>;
+
+    // Enables better debug info to be printed
+    fn assert_relative_eq_tensor<B: Backend, const D: usize>(a: Tensor<B, D>, b: Tensor<B, D>) {
+        assert_relative_eq!(tensor_to_array(a), tensor_to_array(b))
+    }
 
     #[test]
     fn test_array_tensor_conversions() {
-        type B = burn::backend::wgpu::JitBackend<WgpuRuntime<AutoGraphicsApi, f32, i32>>;
-
         let a = array![
             [7.941392e-11, 2.2846538e-12],
             [2.2846538e-12, 4.1901697e-11]
@@ -144,5 +152,52 @@ mod test_transforms {
         let t = array_to_tensor::<B, 2>(a.clone().into_dyn(), &Default::default());
         let a_ = tensor_to_array(t).into_dimensionality::<Ix2>().unwrap();
         assert_relative_eq!(a, a_);
+    }
+
+    #[test]
+    fn test_tensor_transforms_identity() {
+        let device = &Default::default();
+        let arr: Tensor<B, 2> = Tensor::from_ints([[1, 2], [3, 4], [5, 6]], device).float();
+        assert_relative_eq_tensor(apply_tensor_transforms(arr.clone(), &[Transform::Identity]), arr.clone());
+    }
+    
+    #[test]
+    fn test_tensor_transforms_rot90() {
+        let device = &Default::default();
+        let arr: Tensor<B, 2> = Tensor::from_ints([[1, 2], [3, 4], [5, 6]], device).float();
+        let arr_90: Tensor<B, 2> = Tensor::from_ints([[5, 3, 1], [6, 4, 2]], device).float();
+        assert_relative_eq_tensor(apply_tensor_transforms(arr.clone(), &[Transform::Rot90]), arr_90.clone());
+    }
+
+    #[test]
+    fn test_tensor_transforms_rot180() {
+        let device = &Default::default();
+        let arr: Tensor<B, 2> = Tensor::from_ints([[1, 2], [3, 4], [5, 6]], device).float();
+        let arr_180: Tensor<B, 2> = Tensor::from_ints([[6, 5], [4, 3], [2, 1]], device).float();
+        assert_relative_eq_tensor(apply_tensor_transforms(arr.clone(), &[Transform::Rot180]), arr_180.clone());
+    }
+
+    #[test]
+    fn test_tensor_transforms_rot270() {
+        let device = &Default::default();
+        let arr: Tensor<B, 2> = Tensor::from_ints([[1, 2], [3, 4], [5, 6]], device).float();
+        let arr_270: Tensor<B, 2> = Tensor::from_ints([[2, 4, 6], [1, 3, 5]], device).float();
+        assert_relative_eq_tensor(apply_tensor_transforms(arr.clone(), &[Transform::Rot270]), arr_270.clone());
+    }
+
+    #[test]
+    fn test_tensor_transforms_flipud() {
+        let device = &Default::default();
+        let arr: Tensor<B, 2> = Tensor::from_ints([[1, 2], [3, 4], [5, 6]], device).float();
+        let arr_ud: Tensor<B, 2> = Tensor::from_ints([[5, 6], [3, 4], [1, 2]], device).float();
+        assert_relative_eq_tensor(apply_tensor_transforms(arr.clone(), &[Transform::FlipUD]), arr_ud.clone());
+    }
+
+    #[test]
+    fn test_tensor_transforms_fliplr() {
+        let device = &Default::default();
+        let arr: Tensor<B, 2> = Tensor::from_ints([[1, 2], [3, 4], [5, 6]], device).float();
+        let arr_lr: Tensor<B, 2> = Tensor::from_ints([[2, 1], [4, 3], [6, 5]], device).float();
+        assert_relative_eq_tensor(apply_tensor_transforms(arr.clone(), &[Transform::FlipLR]), arr_lr.clone());
     }
 }
