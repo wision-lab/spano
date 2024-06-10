@@ -1,6 +1,6 @@
 use std::{
     env,
-    fs::{create_dir_all, write},
+    fs::{create_dir_all, write}, path::Path,
 };
 
 use anyhow::{anyhow, Result};
@@ -375,14 +375,22 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
                     Some(format!("({}/{}): Matching...", num_lvls - lvl, num_lvls).as_str()),
                 )?;
 
-                if args.viz_output.is_some() {
+                if let Some(viz_path) = args.viz_output.clone() {
+                    let parent = Path::new(&viz_path)
+                        .parent()
+                        .expect("Viz output path should have a parent directory");
+                    let file = format!("lvl-{}.mp4", num_lvls - lvl);
+                    let path = parent.join(file);
                     stabilized_video::<Luma<u8>, B>(
                         &Mapping::accumulate_wrt_idx(mappings.clone(), pano_args.wrt),
                         &virtual_exposures,
                         "tmp/",
                         Some(args.viz_fps),
                         Some(args.viz_step),
-                        Some(format!("lvl-{}.mp4", num_lvls - lvl).as_str()),
+                        Some(
+                            path.to_str()
+                                .expect("Cannot join output visualization paths"),
+                        ),
                         Some(
                             format!("({}/{}): Creating Preview...", num_lvls - lvl, num_lvls)
                                 .as_str(),
