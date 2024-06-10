@@ -145,7 +145,7 @@ impl<B: Backend> Mapping<B> {
         };
 
         let min_coords: Tensor<B, 1> = Tensor::stack::<2>(min_coords, 0).min_dim(0).squeeze(0);
-        let max_coords: Tensor<B, 1> = Tensor::stack::<2>(max_coords, 0).min_dim(0).squeeze(0);
+        let max_coords: Tensor<B, 1> = Tensor::stack::<2>(max_coords, 0).max_dim(0).squeeze(0);
 
         let extent = max_coords - min_coords.clone();
         let offset = Mapping::from_params(min_coords.to_data().convert().value);
