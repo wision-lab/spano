@@ -147,9 +147,10 @@ where
     let weights = distance_transform::<B, 3>(Shape::new(frame_size), device);
     B::blend_into_tensor3(&shifted_mappings[..], inputs, weights, &mut output);
     let canvas = Tensor::from_primitive(output);
-    let merged = canvas.clone().slice([0..canvas_h, 0..canvas_w, 0..c])
-        / canvas.slice([0..canvas_h, 0..canvas_w, c..c + 1]);
-    Ok(merged)
+    let merged = canvas.clone().slice([0..canvas_h, 0..canvas_w, 0..c]);
+    let norm = canvas.slice([0..canvas_h, 0..canvas_w, c..c + 1]);
+    let norm = norm.clone().mask_fill(norm.clone().equal(Tensor::zeros_like(&norm)), 1.0);
+    Ok(merged / norm)
 }
 
 /// Wrapper for `blend_tensors3` that converts to/from images.

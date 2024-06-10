@@ -252,7 +252,7 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
             let num_ves = slice.len_of(Axis(0)) / pano_args.burst_size;
             let num_frames_per_chunk = pano_args.burst_size / pano_args.granularity;
             let mut mappings: Vec<Mapping<B>> =
-                vec![Mapping::from_params(vec![0.0; 2]); num_ves - 1];
+                vec![Mapping::from_params(vec![0.0; 8]); num_ves - 1];
             let mut virtual_exposures: Vec<_> = vec![];
 
             // Preload all data at given granularity

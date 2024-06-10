@@ -69,7 +69,6 @@ impl<E: FloatElement> KernelSource for BlendKernel<E> {
             .register("workgroup_size_x", self.cube_dim.x.to_string())
             .register("workgroup_size_y", self.cube_dim.y.to_string())
             .register("workgroup_size_z", self.cube_dim.z.to_string())
-            .register("padding", "0.0".to_string())
             .register("elem", E::type_name())
             .register("int", "i32")
     }

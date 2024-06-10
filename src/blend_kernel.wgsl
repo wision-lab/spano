@@ -81,8 +81,8 @@ fn main(
     let y = y_/v;
 
     // If warped point isn't in input image, early exit
-    let in_range_x = -{{ padding }}f <= x && x <= f32(src_cols) - 1.0 + {{ padding }}f;
-    let in_range_y = -{{ padding }}f <= y && y <= f32(src_rows) - 1.0 + {{ padding }}f;
+    let in_range_x = 0.0 <= x && x <= f32(src_cols) - 1.0;
+    let in_range_y = 0.0 <= y && y <= f32(src_rows) - 1.0;
     let out_index = get_dst_index(row, col, channel);
 
     // Do not blend anything if out of range

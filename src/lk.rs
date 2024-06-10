@@ -3,7 +3,7 @@ use std::collections::{HashMap, VecDeque};
 use anyhow::{anyhow, Result};
 use burn::{
     module::{Param, ParamId},
-    nn::{conv::Conv2dConfig, Initializer, PaddingConfig2d},
+    nn::{conv::Conv2dConfig, Initializer, PaddingConfig2d}
 };
 use burn_tensor::{ElementConversion, Int, Shape, Tensor};
 use conv::{ValueFrom, ValueInto};
@@ -14,7 +14,7 @@ use image::{
 use imageproc::{
     definitions::{Clamp, Image},
     filter::filter3x3,
-    gradients::{HORIZONTAL_SCHARR, HORIZONTAL_SOBEL, VERTICAL_SCHARR, VERTICAL_SOBEL},
+    gradients::{HORIZONTAL_SCHARR, VERTICAL_SCHARR},
 };
 use itertools::izip;
 use ndarray::Ix2;
@@ -67,11 +67,11 @@ pub fn tensor_gradients<B: Backend>(img: Tensor<B, 3>) -> (Tensor<B, 3>, Tensor<
     let img_ = tensor3_to_image::<Luma<f32>, B>(img.clone());
     (
         image_to_tensor3::<Luma<f32>, B>(
-            filter3x3(&img_, &HORIZONTAL_SOBEL.map(|v| v as f32)),
+            filter3x3(&img_, &HORIZONTAL_SCHARR.map(|v| v as f32)),
             &img.device(),
         ),
         image_to_tensor3::<Luma<f32>, B>(
-            filter3x3(&img_, &VERTICAL_SOBEL.map(|v| v as f32)),
+            filter3x3(&img_, &VERTICAL_SCHARR.map(|v| v as f32)),
             &img.device(),
         ),
     )
@@ -336,7 +336,7 @@ pub fn iclk_grayscale<B: Backend>(
             let warped_im1_vals = B::float_slice(warped_im1gray.clone(), [0..h, 0..w, 0..c]);
             let weights = B::float_slice(warped_im1gray.clone(), [0..h, 0..w, c..c + 1]);
             let weights = B::float_reshape(weights, Shape::new([h, w]));
-            let weights = B::float_mask_fill(weights, valid.clone(), (0.0).elem());
+            let weights = B::float_mask_fill(weights, B::bool_not(valid.clone()), (0.0).elem());
             (warped_im1_vals, weights)
         } else {
             (warped_im1gray.clone(), B::bool_into_float(valid.clone()))
@@ -505,7 +505,7 @@ where
             )
             // Drop param_history
             .map(|(mapping, _)| {
-                // println!("{:}", mapping);
+                // println!("{:}, {mapping}", params_hist.len());
                 mapping
             })
         })

@@ -209,7 +209,6 @@ where
         .step_by(step.unwrap_or(100))
         .enumerate()
         .for_each(|(i, (map, frame))| {
-            println!("{frame}");
             let (img, _) = map.transform(None, Some(offset.clone())).warp_tensor3(
                 frame.clone(),
                 (canvas_h.ceil() as usize, canvas_w.ceil() as usize),
