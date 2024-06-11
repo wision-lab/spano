@@ -7,8 +7,7 @@ use burn::backend::wgpu::{
     KernelSource, SourceKernel, SourceTemplate, WgpuRuntime, WorkGroup, WorkgroupSize,
 };
 use burn_tensor::{
-    ops::{BoolTensor, FloatTensor},
-    Tensor,
+    ops::{BoolTensor, FloatTensor, FloatTensorOps}, Shape, Tensor
 };
 use derive_new::new;
 
@@ -22,7 +21,6 @@ kernel_wgsl!(BlendRaw, "./blend_kernel.wgsl");
 #[derive(new, Debug)]
 struct WarpKernel<E: FloatElement> {
     cube_dim: WorkgroupSize,
-    background: Option<Vec<f32>>,
     _elem: PhantomData<E>,
 }
 
@@ -37,24 +35,11 @@ impl<E: FloatElement> KernelSource for WarpKernel<E> {
     fn source(&self) -> SourceTemplate {
         // Extend our raw kernel with cube size information using the
         // `SourceTemplate` trait.
-        let default_bkg = vec![0.0, 0.0, 0.0];
-        let (bkg, padding) = if let Some(bkg) = &self.background {
-            (bkg, "1.0")
-        } else {
-            (&default_bkg, "0.0")
-        };
-
-        let bkg_str = (bkg.iter().map(|i| format!("{:.4}", i)))
-            .collect::<Vec<_>>()
-            .join(", ");
-
         WarpRaw::new()
             .source()
             .register("workgroup_size_x", self.cube_dim.x.to_string())
             .register("workgroup_size_y", self.cube_dim.y.to_string())
             .register("workgroup_size_z", self.cube_dim.z.to_string())
-            .register("background_color", bkg_str.to_string())
-            .register("padding", padding)
             .register("elem", E::type_name())
             .register("int", "i32")
     }
@@ -81,7 +66,7 @@ pub trait Backend: burn::tensor::backend::Backend {
         input: Tensor<Self, 3>,
         output: &mut FloatTensor<Self, 3>,
         valid: &mut BoolTensor<Self, 2>,
-        background: Option<Vec<f32>>,
+        background: Option<Tensor<Self, 1>>,
     );
 
     fn blend_into_tensor3(
@@ -99,7 +84,7 @@ impl<G: GraphicsApi, F: FloatElement, I: IntElement> Backend for JitBackend<Wgpu
         input: Tensor<Self, 3>,
         output: &mut FloatTensor<Self, 3>,
         valid: &mut BoolTensor<Self, 2>,
-        background: Option<Vec<f32>>,
+        background: Option<Tensor<Self, 1>>,
     ) {
         // Validate devices
         if mapping.device() != input.device() {
@@ -126,11 +111,18 @@ impl<G: GraphicsApi, F: FloatElement, I: IntElement> Backend for JitBackend<Wgpu
             panic!("Output and Valid tensor should have same height and width");
         }
 
+        // Find padding and background values
+        let bkg = if let Some(bkg) = background {
+            Self::float_cat(vec![bkg.into_primitive(), Self::float_ones(Shape::new([1]), &output.device)], 0)
+        } else {
+            Self::float_zeros(Shape::new([input.shape.dims[2]+1]), &output.device)
+        };
+
         // Define workgroup size, hardcoded for simplicity.
         let workgroup_size = WorkgroupSize { x: 16, y: 16, z: 1 };
 
         // Create the kernel.
-        let kernel = WarpKernel::<F>::new(workgroup_size, background);
+        let kernel = WarpKernel::<F>::new(workgroup_size);
 
         // Build info buffer with tensor information needed by the kernel, such as shapes and strides.
         let input_shape: Vec<u32> = input.shape.dims.iter().map(|i| *i as u32).collect();
@@ -140,7 +132,7 @@ impl<G: GraphicsApi, F: FloatElement, I: IntElement> Backend for JitBackend<Wgpu
 
         // Declare the wgsl workgroup with the number of cubes in x, y and z.
         let [num_rows, num_cols, num_channels] = output_shape[..] else {
-            unreachable!("Input has 3 dims")
+            unreachable!("Input should have 3 dims")
         };
         let cubes_needed_in_x = f32::ceil(num_rows as f32 / workgroup_size.x as f32) as u32;
         let cubes_needed_in_y = f32::ceil(num_cols as f32 / workgroup_size.y as f32) as u32;
@@ -161,6 +153,7 @@ impl<G: GraphicsApi, F: FloatElement, I: IntElement> Backend for JitBackend<Wgpu
                 &valid.handle,
                 &input_shape_handle,
                 &output_shape_handle,
+                &bkg.handle,
             ],
         );
     }

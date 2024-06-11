@@ -22,8 +22,11 @@ var<storage, read> input_shape_handle: array<u32>;
 @binding(5)
 var<storage, read> output_shape_handle: array<u32>;
 
+@group(0)
+@binding(6)
+var<storage, read> bkg: array<{{ elem }}>;
+
 const BLOCK_SIZE = vec3({{ workgroup_size_x }}u, {{ workgroup_size_y }}u, {{ workgroup_size_z }}u);
-const BACKGROUND_COLOR = vec3({{ background_color }});
 
 fn get_src_index(row: u32, col: u32, channel: u32) -> u32 {
     // Ravel multi index for HWC 
@@ -46,7 +49,7 @@ fn get_pix_or_bkg(x: f32, y: f32, c: u32) -> f32{
     let src_cols = input_shape_handle[1];
 
     if x < 0.0 || x >= f32(src_cols) || y < 0.0 || y >= f32(src_rows) {
-        return BACKGROUND_COLOR[c];
+        return bkg[c];
     } else {
         let index = get_src_index(u32(y), u32(x), c);
         return input[index];
@@ -67,9 +70,11 @@ fn main(
     // Basic information
     let src_rows = input_shape_handle[0];
     let src_cols = input_shape_handle[1];
+    let src_channels = input_shape_handle[2];
     let dst_rows = output_shape_handle[0];
     let dst_cols = output_shape_handle[1];
     let dst_channels = output_shape_handle[2];
+    let padding = bkg[src_channels];
 
     // Returns if outside the output dimension
     // This is needed for when the image size isn't a perfect multiple of workgroup size
@@ -86,14 +91,14 @@ fn main(
     let y = y_/v;
 
     // If warped point isn't in input image, early exit
-    let in_range_x = -{{ padding }}f <= x && x <= f32(src_cols) - 1.0 + {{ padding }}f;
-    let in_range_y = -{{ padding }}f <= y && y <= f32(src_rows) - 1.0 + {{ padding }}f;
+    let in_range_x = -padding <= x && x <= f32(src_cols) - 1.0 + padding;
+    let in_range_y = -padding <= y && y <= f32(src_rows) - 1.0 + padding;
 
     let out_index = get_dst_index(row, col, channel);
     let valid_index = get_dst_index(row, col, 0u);
 
     if !in_range_x || !in_range_y {
-        output[out_index] = BACKGROUND_COLOR[channel];
+        output[out_index] = bkg[channel];
         valid[valid_index] = 0u;
         return;
     }

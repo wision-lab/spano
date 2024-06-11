@@ -50,6 +50,7 @@ fn benchmark_warp_tensor3(c: &mut Criterion) {
     let output = into_contiguous(output);
     let valid = B::bool_empty(Shape::new([h as usize, w as usize]), device);
     let valid = into_contiguous(valid);
+    let bkg = Tensor::zeros([3], device);
 
     c.bench_function("warp_tensor3", |b| {
         b.iter(|| {
@@ -58,7 +59,7 @@ fn benchmark_warp_tensor3(c: &mut Criterion) {
                 black_box(input.clone()),
                 &mut black_box(output.clone()),
                 &mut black_box(valid.clone()),
-                Some(vec![0.0, 0.0, 0.0]),
+                Some(bkg.clone()),
             );
         })
     });

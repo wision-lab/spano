@@ -164,9 +164,12 @@ impl<B: Backend> Mapping<B> {
         <P as Pixel>::Subpixel: Clamp<f32>,
     {
         let background =
-            background.map(|v| v.channels().into_iter().map(|i| f32::from(*i)).collect());
+            background.map(|v| Tensor::from_floats(
+                &v.channels().into_iter().map(|i| f32::from(*i)).collect::<Vec<_>>()[..],
+                &self.device()
+            )).unwrap_or(Tensor::zeros([P::CHANNEL_COUNT as usize], &self.device()));
         let img_src = image_to_tensor3::<P, B>(data.clone(), &self.device());
-        let (img_warped, _) = self.warp_tensor3(img_src, out_size, background);
+        let (img_warped, _) = self.warp_tensor3(img_src, out_size, Some(background));
         tensor3_to_image::<P, B>(img_warped)
     }
 
@@ -176,7 +179,7 @@ impl<B: Backend> Mapping<B> {
         &self,
         data: Tensor<B, 3>,
         out_size: (usize, usize),
-        background: Option<Vec<f32>>,
+        background: Option<Tensor<B, 1>>,
     ) -> (Tensor<B, 3>, Tensor<B, 2, Bool>) {
         let (h, w) = out_size;
         let [_, _, c] = data.dims();
@@ -206,7 +209,7 @@ impl<B: Backend> Mapping<B> {
         data: Tensor<B, 3>,
         out: &mut FloatTensor<B, 3>,
         valid: &mut BoolTensor<B, 2>,
-        background: Option<Vec<f32>>,
+        background: Option<Tensor<B, 1>>,
     ) {
         B::warp_into_tensor3(self.clone(), data, out, valid, background);
     }

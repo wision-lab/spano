@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::Result;
-use burn_tensor::Tensor;
+use burn_tensor::{Shape, Tensor};
 use image::{
     imageops::{resize, FilterType},
     io::Reader as ImageReader,
@@ -212,7 +212,7 @@ where
             let (img, _) = map.transform(None, Some(offset.clone())).warp_tensor3(
                 frame.clone(),
                 (canvas_h.ceil() as usize, canvas_w.ceil() as usize),
-                Some(vec![0.0; P::CHANNEL_COUNT.into()]),
+                Some(Tensor::zeros(Shape::new([P::CHANNEL_COUNT as usize]), &map.device())),
             );
             let img = tensor3_to_image::<P, B>(img);
             let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
