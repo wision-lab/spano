@@ -220,46 +220,46 @@ impl<B: Backend> Mapping<B> {
         B::warp_into_tensor3(self.clone(), data, out, valid, background);
     }
 
-    // pub fn from_params(params: Tensor<B, 1>) -> Self {
-    //     let device = &params.device();
-    //     let eye = Tensor::eye(3, device);
-    //     let zeros = Tensor::<B, 2>::zeros([3, 3], device);
-    //     let (mat, kind) = match &params.dims()[0] {
-    //         // Identity
-    //         0 => (eye, TransformationType::Identity),
+    pub fn from_params_tensor(params: Tensor<B, 1>) -> Self {
+        let device = &params.device();
+        let eye = Tensor::eye(3, device);
+        let zeros = Tensor::<B, 2>::zeros([3, 3], device);
+        let (mat, kind) = match &params.dims()[0] {
+            // Identity
+            0 => (eye, TransformationType::Identity),
 
-    //         // Translations
-    //         2 => {
-    //             let mat = eye.slice_assign([0..2, 2..3], params.unsqueeze_dim(1));
-    //             (mat, TransformationType::Translational)
-    //         }
+            // Translations
+            2 => {
+                let mat = eye.slice_assign([0..2, 2..3], params.unsqueeze_dim(1));
+                (mat, TransformationType::Translational)
+            }
 
-    //         // Affine Transforms
-    //         6 => {
-    //             let top = params.reshape(Shape::new([3, 2])).transpose();
-    //             (
-    //                 zeros.slice_assign([0..2, 0..3], top) + eye,
-    //                 TransformationType::Affine,
-    //             )
-    //         }
+            // Affine Transforms
+            6 => {
+                let top = params.reshape(Shape::new([3, 2])).transpose();
+                (
+                    zeros.slice_assign([0..2, 0..3], top) + eye,
+                    TransformationType::Affine,
+                )
+            }
 
-    //         // Projective Transforms
-    //         8 => {
-    //             let top = params
-    //                 .clone()
-    //                 .slice([0..6])
-    //                 .reshape(Shape::new([3, 2]))
-    //                 .transpose();
-    //             let btm = params.slice([6..8]).unsqueeze_dim(0);
-    //             let mat = zeros
-    //                 .slice_assign([0..2, 0..3], top)
-    //                 .slice_assign([2..3, 0..2], btm);
-    //             (mat + eye, TransformationType::Projective)
-    //         }
-    //         _ => panic!("Unknown mapping kind."),
-    //     };
-    //     Self::from_tensor(mat, kind)
-    // }
+            // Projective Transforms
+            8 => {
+                let top = params
+                    .clone()
+                    .slice([0..6])
+                    .reshape(Shape::new([3, 2]))
+                    .transpose();
+                let btm = params.slice([6..8]).unsqueeze_dim(0);
+                let mat = zeros
+                    .slice_assign([0..2, 0..3], top)
+                    .slice_assign([2..3, 0..2], btm);
+                (mat + eye, TransformationType::Projective)
+            }
+            _ => panic!("Unknown mapping kind."),
+        };
+        Self::from_tensor(mat, kind)
+    }
 
     /// Given a list of transform parameters, return the Mapping that would transform a
     /// source point to its destination. The type of mapping depends on the number of params (DoF).
@@ -435,9 +435,10 @@ impl<B: Backend> Mapping<B> {
         }
     }
 
-    pub fn get_params_(&self) -> Tensor<B, 1> {
+    pub fn get_params_tensor(&self) -> Tensor<B, 1> {
         let device = &self.device();
         let d = self.mat.clone().slice([2..3, 2..3]).into_scalar();
+
         // match &self.kind {
         //     TransformationType::Identity => Tensor::from_floats([], device),
         //     TransformationType::Translational => {

@@ -143,7 +143,7 @@ pub fn iclk_grayscale<B: Backend>(
     message: Option<&str>,
 ) -> Result<(Mapping<B>, Vec<Vec<f32>>)> {
     // Initialize values
-    let mut params = init_mapping.inverse().get_params();
+    let mut params = init_mapping.inverse().get_params_tensor();
     let num_params = init_mapping.kind.num_params();
     let [h, w, c] = im2_gray.dims();
 
@@ -318,7 +318,7 @@ pub fn iclk_grayscale<B: Backend>(
 
     // Tracking variables
     let pbar = get_pbar(max_iters.unwrap_or(250) as usize, message);
-    let mut params_history: Vec<Vec<f32>> = vec![];
+    let mut params_history: Vec<_> = vec![];
     params_history.push(params.clone());
     let mut dps: VecDeque<_> = VecDeque::with_capacity(patience.unwrap_or(10));
 
@@ -327,7 +327,7 @@ pub fn iclk_grayscale<B: Backend>(
         pbar.set_position(i as u64);
 
         // Create mapping from params and use it to warp img1 into img2's coordinate frame
-        let mapping = Mapping::<B>::from_params(params.clone());
+        let mapping = Mapping::<B>::from_params_tensor(params.clone());
         mapping.warp_tensor3_into(im1_gray.clone(), &mut warped_im1gray, &mut valid, None);
 
         let (warped_im1_vals, weights) = if has_weights {
@@ -351,14 +351,14 @@ pub fn iclk_grayscale<B: Backend>(
                 .sum_dim(1)
                 .reshape(Shape::new([num_params, 1])),
         );
-        let mapping_dp = Mapping::<B>::from_params(dp.clone().to_data().convert().value);
+        let mapping_dp = Mapping::<B>::from_params_tensor(dp.clone().squeeze(1));
 
         // Update the parameters
         params = Mapping::<B>::from_tensor(
             mapping.mat.matmul(mapping_dp.inverse().mat),
             init_mapping.kind,
         )
-        .get_params();
+        .get_params_tensor();
         params_history.push(params.clone());
 
         // Push back dp update, pop old one if deque is full
@@ -374,7 +374,7 @@ pub fn iclk_grayscale<B: Backend>(
         }
     }
     pbar.finish_and_clear();
-    Ok((Mapping::from_params(params).inverse(), params_history))
+    Ok((Mapping::from_params_tensor(params).inverse(), params_history.iter().map(|v| v.to_data().convert().value).collect()))
 }
 
 #[allow(clippy::type_complexity)]
