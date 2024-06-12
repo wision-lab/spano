@@ -19,7 +19,6 @@ use imageproc::{
 use itertools::izip;
 use ndarray::Ix2;
 use ndarray_linalg::solve::Inverse;
-use num_traits::ToPrimitive;
 use rayon::prelude::*;
 
 use crate::{
@@ -369,11 +368,8 @@ pub fn iclk_grayscale<B: Backend>(
         dps.push_back(dp.clone());
 
         // Early exit if average dp is small
-        let avg_dp: Tensor<B, 2> = Tensor::stack::<3>(dps.clone().into(), 2)
-            .mean_dim(2)
-            .squeeze(2);
-
-        if avg_dp.abs().max().into_scalar().to_f32().unwrap() <= stop_early.unwrap_or(1e-3) {
+        let avg_dp: Tensor<B, 2>  = dps.clone().into_iter().reduce(|acc, e| acc + e).unwrap() / (dps.len() as f32);
+        if avg_dp.abs().lower_equal_elem(stop_early.unwrap_or(1e-3)).all().into_scalar() {
             break;
         }
     }
