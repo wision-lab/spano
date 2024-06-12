@@ -518,25 +518,6 @@ impl<B: Backend> Mapping<B> {
     /// Invert the mapping by creating new mapping with inverse matrix.
     // #[pyo3(text_signature = "(self) -> Self")]
     pub fn inverse(&self) -> Self {
-        // import sympy as sp
-        // p1,p2,p3,p4,p5,p6,p7,p8 = sp.symbols("p1,p2,p3,p4,p5,p6,p7,p8", real=True)
-        // M = sp.Matrix(3,3, [p1+1,p3,p5,p2,p4+1,p6,p7,p8,1])
-        // M_inv = sp.simplify(M.inv() / M.inv()[-1, -1])
-        // sp.cse(M_inv)
-
-        // ----------------------------------------------------
-        // let eye = Tensor::eye(3, &self.device());
-        // let [p1,p3,p5,p2,p4,p6,p7,p8,_]: [f32] = (self.mat.clone() - eye).flatten::<1>(0, 1).into_data().convert().value[..] else {unreachable!()};
-        // let x0 = p4 + 1.0;
-        // let x1 = 1.0 / (p1*p4 + p1 - p2*p3 + x0);
-        // let mat = Tensor::from_floats(
-        //     [
-        //         [       x1*(-p6*p8 + x0),           x1*(-p3 + p5*p8),  x1*(p3*p6 - p4*p5 - p5)],
-        //         [       x1*(-p2 + p6*p7),      x1*(p1 - p5*p7 + 1.0), x1*(-p1*p6 + p2*p5 - p6)],
-        //         [x1*(p2*p8 - p4*p7 - p7), x1*(-p1*p8 + p3*p7 - p8),                        1.0]
-        //     ], &self.device()
-        // );
-        // ----------------------------------------------------
         // TODO: Is this really necessary?!
         let mat = array_to_tensor(
             tensor_to_array(self.mat.clone())
@@ -551,8 +532,35 @@ impl<B: Backend> Mapping<B> {
             mat,
             kind: self.kind,
         }
+    }
+
+    pub fn inverse1(&self) -> Self {
+        // import sympy as sp
+        // p1,p2,p3,p4,p5,p6,p7,p8 = sp.symbols("p1,p2,p3,p4,p5,p6,p7,p8", real=True)
+        // M = sp.Matrix(3,3, [p1+1,p3,p5,p2,p4+1,p6,p7,p8,1])
+        // M_inv = sp.simplify(M.inv() / M.inv()[-1, -1])
+        // sp.cse(M_inv)
+
         // ----------------------------------------------------
-        // Self::from_params(self.get_inverse_params())
+        let eye = Tensor::eye(3, &self.device());
+        let [p1,p3,p5,p2,p4,p6,p7,p8,_]: [f32] = (self.mat.clone() - eye).flatten::<1>(0, 1).into_data().convert().value[..] else {unreachable!()};
+        let x0 = p4 + 1.0;
+        let x1 = 1.0 / (p1*p4 + p1 - p2*p3 + x0);
+        let mat = Tensor::from_floats(
+            [
+                [       x1*(-p6*p8 + x0),           x1*(-p3 + p5*p8),  x1*(p3*p6 - p4*p5 - p5)],
+                [       x1*(-p2 + p6*p7),      x1*(p1 - p5*p7 + 1.0), x1*(-p1*p6 + p2*p5 - p6)],
+                [x1*(p2*p8 - p4*p7 - p7), x1*(-p1*p8 + p3*p7 - p8),                        1.0]
+            ], &self.device()
+        );
+        Self {
+            mat,
+            kind: self.kind,
+        }
+    }
+
+    pub fn inverse2(&self) -> Self {
+        Self::from_params(self.get_inverse_params())
     }
 
     /// Upgrade Type of warp if it's not unknown, i.e: Identity -> Translational -> Affine -> Projective

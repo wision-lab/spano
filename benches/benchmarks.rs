@@ -119,6 +119,38 @@ pub fn benchmark_mapping_inverse(c: &mut Criterion) {
     );
 }
 
+pub fn benchmark_mapping_inverse1(c: &mut Criterion) {
+    type B = burn::backend::wgpu::JitBackend<WgpuRuntime<AutoGraphicsApi, f32, i32>>;
+    let params = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    let map = Mapping::<B>::from_params(params);
+
+    c.bench_with_input(
+        BenchmarkId::new("mapping_inverse1", map.clone()),
+        &map.clone(),
+        |b, m| {
+            b.iter(|| {
+                let _ = m.inverse1();
+            })
+        },
+    );
+}
+
+pub fn benchmark_mapping_inverse2(c: &mut Criterion) {
+    type B = burn::backend::wgpu::JitBackend<WgpuRuntime<AutoGraphicsApi, f32, i32>>;
+    let params = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    let map = Mapping::<B>::from_params(params);
+
+    c.bench_with_input(
+        BenchmarkId::new("mapping_inverse2", map.clone()),
+        &map.clone(),
+        |b, m| {
+            b.iter(|| {
+                let _ = m.inverse2();
+            })
+        },
+    );
+}
+
 pub fn benchmark_iclk(c: &mut Criterion) {
     type B = burn::backend::wgpu::JitBackend<WgpuRuntime<AutoGraphicsApi, f32, i32>>;
 
@@ -196,25 +228,29 @@ criterion_group! {
             PProfProfiler::new(100, Output::Flamegraph(None))
         );
     targets =
-        benchmark_warp_tensor3,
-        benchmark_distance_transform,
-        benchmark_mapping_from_params,
-        benchmark_mapping_get_params,
+        // benchmark_warp_tensor3,
+        // benchmark_distance_transform,
+        // benchmark_mapping_from_params,
+        // benchmark_mapping_get_params,
         benchmark_mapping_inverse,
-        benchmark_iclk,
-        benchmark_merge_images
+        benchmark_mapping_inverse1,
+        benchmark_mapping_inverse2,
+        // benchmark_iclk,
+        // benchmark_merge_images
 }
 
 #[cfg(not(target_os = "linux"))]
 criterion_group! {
     benches,
-    benchmark_warp_tensor3,
-    benchmark_mapping_from_params,
-    benchmark_mapping_get_params,
-    benchmark_distance_transform,
+    // benchmark_warp_tensor3,
+    // benchmark_mapping_from_params,
+    // benchmark_mapping_get_params,
+    // benchmark_distance_transform,
     benchmark_mapping_inverse,
-    benchmark_iclk,
-    benchmark_merge_images
+    benchmark_mapping_inverse1,
+    benchmark_mapping_inverse2,
+    // benchmark_iclk,
+    // benchmark_merge_images
 }
 
 criterion_main!(benches);
