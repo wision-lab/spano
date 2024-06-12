@@ -385,7 +385,7 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
                     stabilized_video::<Luma<u8>, B>(
                         &Mapping::accumulate_wrt_idx(mappings.clone(), pano_args.wrt),
                         &virtual_exposures,
-                        "tmp/",
+                        None,
                         Some(args.viz_fps),
                         Some(args.viz_step),
                         Some(

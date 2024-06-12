@@ -19,6 +19,7 @@ use photoncube2video::{
     transforms::annotate,
 };
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
+use tempfile::tempdir;
 
 use crate::{kernels::Backend, transforms::tensor3_to_image, warps::Mapping};
 
@@ -174,7 +175,7 @@ pub fn animate_hierarchical_warp<B: Backend>(
 pub fn stabilized_video<P, B>(
     mappings: &[Mapping<B>],
     frames: &[Tensor<B, 3>],
-    img_dir: &str,
+    img_dir: Option<&str>,
     fps: Option<u64>,
     step: Option<usize>,
     out_path: Option<&str>,
@@ -188,6 +189,9 @@ where
     B: Backend,
 {
     // Clear dir, and make sure it exists
+    let tmp_dir = tempdir()?;
+    let img_dir = img_dir.unwrap_or(tmp_dir.path().to_str().unwrap());
+
     if Path::new(&img_dir).is_dir() {
         remove_dir_all(img_dir)?;
     }
