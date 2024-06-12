@@ -7,7 +7,8 @@ use burn::backend::wgpu::{
     KernelSource, SourceKernel, SourceTemplate, WgpuRuntime, WorkGroup, WorkgroupSize,
 };
 use burn_tensor::{
-    ops::{BoolTensor, FloatTensor, FloatTensorOps}, Shape, Tensor
+    ops::{BoolTensor, FloatTensor, FloatTensorOps},
+    Shape, Tensor,
 };
 use derive_new::new;
 
@@ -113,9 +114,15 @@ impl<G: GraphicsApi, F: FloatElement, I: IntElement> Backend for JitBackend<Wgpu
 
         // Find padding and background values
         let bkg = if let Some(bkg) = background {
-            Self::float_cat(vec![bkg.into_primitive(), Self::float_ones(Shape::new([1]), &output.device)], 0)
+            Self::float_cat(
+                vec![
+                    bkg.into_primitive(),
+                    Self::float_ones(Shape::new([1]), &output.device),
+                ],
+                0,
+            )
         } else {
-            Self::float_zeros(Shape::new([input.shape.dims[2]+1]), &output.device)
+            Self::float_zeros(Shape::new([input.shape.dims[2] + 1]), &output.device)
         };
 
         // Define workgroup size, hardcoded for simplicity.

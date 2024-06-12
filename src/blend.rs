@@ -149,7 +149,9 @@ where
     let canvas = Tensor::from_primitive(output);
     let merged = canvas.clone().slice([0..canvas_h, 0..canvas_w, 0..c]);
     let norm = canvas.slice([0..canvas_h, 0..canvas_w, c..c + 1]);
-    let norm = norm.clone().mask_fill(norm.clone().equal(Tensor::zeros_like(&norm)), 1.0);
+    let norm = norm
+        .clone()
+        .mask_fill(norm.clone().equal(Tensor::zeros_like(&norm)), 1.0);
     Ok(merged / norm)
 }
 

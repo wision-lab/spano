@@ -3,7 +3,7 @@ use std::collections::{HashMap, VecDeque};
 use anyhow::{anyhow, Result};
 use burn::{
     module::{Param, ParamId},
-    nn::{conv::Conv2dConfig, Initializer, PaddingConfig2d}
+    nn::{conv::Conv2dConfig, Initializer, PaddingConfig2d},
 };
 use burn_tensor::{ElementConversion, Int, Shape, Tensor};
 use conv::{ValueFrom, ValueInto};
@@ -511,7 +511,6 @@ where
         })
         // Collect to force reorder
         .collect::<Result<Vec<_>>>()?;
-
     // Return raw pairwise warps (N-1 in total)
     pbar.finish_and_clear();
     Ok(mappings)

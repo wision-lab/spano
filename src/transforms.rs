@@ -1,11 +1,10 @@
 use burn_ndarray::{NdArray, NdArrayTensor};
-use burn_tensor::{Shape, Tensor};
+use burn_tensor::{backend::Backend, Shape, Tensor};
 use image::{ImageBuffer, Pixel};
 use imageproc::definitions::Clamp;
 use ndarray::{ArrayBase, Dim, IxDynImpl, OwnedRepr};
 use num_traits::ToPrimitive;
 use photoncube2video::transforms::Transform;
-use burn_tensor::backend::Backend;
 
 /// Normalize tensor between 0-1
 pub fn normalize<B: Backend, const D: usize>(tensor: Tensor<B, D>) -> Tensor<B, D> {
@@ -158,15 +157,21 @@ mod test_transforms {
     fn test_tensor_transforms_identity() {
         let device = &Default::default();
         let arr: Tensor<B, 2> = Tensor::from_ints([[1, 2], [3, 4], [5, 6]], device).float();
-        assert_relative_eq_tensor(apply_tensor_transforms(arr.clone(), &[Transform::Identity]), arr.clone());
+        assert_relative_eq_tensor(
+            apply_tensor_transforms(arr.clone(), &[Transform::Identity]),
+            arr.clone(),
+        );
     }
-    
+
     #[test]
     fn test_tensor_transforms_rot90() {
         let device = &Default::default();
         let arr: Tensor<B, 2> = Tensor::from_ints([[1, 2], [3, 4], [5, 6]], device).float();
         let arr_90: Tensor<B, 2> = Tensor::from_ints([[5, 3, 1], [6, 4, 2]], device).float();
-        assert_relative_eq_tensor(apply_tensor_transforms(arr.clone(), &[Transform::Rot90]), arr_90.clone());
+        assert_relative_eq_tensor(
+            apply_tensor_transforms(arr.clone(), &[Transform::Rot90]),
+            arr_90.clone(),
+        );
     }
 
     #[test]
@@ -174,7 +179,10 @@ mod test_transforms {
         let device = &Default::default();
         let arr: Tensor<B, 2> = Tensor::from_ints([[1, 2], [3, 4], [5, 6]], device).float();
         let arr_180: Tensor<B, 2> = Tensor::from_ints([[6, 5], [4, 3], [2, 1]], device).float();
-        assert_relative_eq_tensor(apply_tensor_transforms(arr.clone(), &[Transform::Rot180]), arr_180.clone());
+        assert_relative_eq_tensor(
+            apply_tensor_transforms(arr.clone(), &[Transform::Rot180]),
+            arr_180.clone(),
+        );
     }
 
     #[test]
@@ -182,7 +190,10 @@ mod test_transforms {
         let device = &Default::default();
         let arr: Tensor<B, 2> = Tensor::from_ints([[1, 2], [3, 4], [5, 6]], device).float();
         let arr_270: Tensor<B, 2> = Tensor::from_ints([[2, 4, 6], [1, 3, 5]], device).float();
-        assert_relative_eq_tensor(apply_tensor_transforms(arr.clone(), &[Transform::Rot270]), arr_270.clone());
+        assert_relative_eq_tensor(
+            apply_tensor_transforms(arr.clone(), &[Transform::Rot270]),
+            arr_270.clone(),
+        );
     }
 
     #[test]
@@ -190,7 +201,10 @@ mod test_transforms {
         let device = &Default::default();
         let arr: Tensor<B, 2> = Tensor::from_ints([[1, 2], [3, 4], [5, 6]], device).float();
         let arr_ud: Tensor<B, 2> = Tensor::from_ints([[5, 6], [3, 4], [1, 2]], device).float();
-        assert_relative_eq_tensor(apply_tensor_transforms(arr.clone(), &[Transform::FlipUD]), arr_ud.clone());
+        assert_relative_eq_tensor(
+            apply_tensor_transforms(arr.clone(), &[Transform::FlipUD]),
+            arr_ud.clone(),
+        );
     }
 
     #[test]
@@ -198,6 +212,9 @@ mod test_transforms {
         let device = &Default::default();
         let arr: Tensor<B, 2> = Tensor::from_ints([[1, 2], [3, 4], [5, 6]], device).float();
         let arr_lr: Tensor<B, 2> = Tensor::from_ints([[2, 1], [4, 3], [6, 5]], device).float();
-        assert_relative_eq_tensor(apply_tensor_transforms(arr.clone(), &[Transform::FlipLR]), arr_lr.clone());
+        assert_relative_eq_tensor(
+            apply_tensor_transforms(arr.clone(), &[Transform::FlipLR]),
+            arr_lr.clone(),
+        );
     }
 }

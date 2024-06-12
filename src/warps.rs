@@ -163,11 +163,17 @@ impl<B: Backend> Mapping<B> {
         f32: From<<P as Pixel>::Subpixel>,
         <P as Pixel>::Subpixel: Clamp<f32>,
     {
-        let background =
-            background.map(|v| Tensor::from_floats(
-                &v.channels().into_iter().map(|i| f32::from(*i)).collect::<Vec<_>>()[..],
-                &self.device()
-            )).unwrap_or(Tensor::zeros([P::CHANNEL_COUNT as usize], &self.device()));
+        let background = background
+            .map(|v| {
+                Tensor::from_floats(
+                    &v.channels()
+                        .into_iter()
+                        .map(|i| f32::from(*i))
+                        .collect::<Vec<_>>()[..],
+                    &self.device(),
+                )
+            })
+            .unwrap_or(Tensor::zeros([P::CHANNEL_COUNT as usize], &self.device()));
         let img_src = image_to_tensor3::<P, B>(data.clone(), &self.device());
         let (img_warped, _) = self.warp_tensor3(img_src, out_size, Some(background));
         tensor3_to_image::<P, B>(img_warped)
@@ -422,8 +428,8 @@ impl<B: Backend> Mapping<B> {
         let p = self.get_params_full();
         match &self.kind {
             TransformationType::Identity => vec![],
-            TransformationType::Translational => p[5..7].into(),
-            TransformationType::Affine => p[..7].into(),
+            TransformationType::Translational => p[4..6].into(),
+            TransformationType::Affine => p[..6].into(),
             TransformationType::Projective => p,
             TransformationType::Unknown => panic!("Transformation cannot be unknown!"),
         }
@@ -624,18 +630,51 @@ impl<B: Backend> Mapping<B> {
 // ----------------------------------------------------------------------------
 #[cfg(test)]
 mod test_warps {
+    use std::iter::zip;
+
     use burn::backend::wgpu::{AutoGraphicsApi, WgpuRuntime};
     use burn_tensor::Tensor;
     use ndarray::{array, Array2};
 
     use crate::warps::{Mapping, TransformationType};
+    type B = burn::backend::wgpu::JitBackend<WgpuRuntime<AutoGraphicsApi, f32, i32>>;
+
+    fn assert_vec_eq(a: Vec<f32>, b: Vec<f32>) {
+        if a.len() != b.len() {
+            println!("Got {:?} but expected {:?}", a, b);
+            assert!(false);
+        } else if !zip(&a, &b).all(|(i, j)| i == j) {
+            println!("Got {:?} but expected {:?}", a, b);
+            assert!(false);
+        }
+    }
+
+    #[test]
+    fn test_get_from_params() {
+        let params = vec![4.0, 5.0];
+        assert_vec_eq(
+            Mapping::<B>::from_params(params.clone()).get_params(),
+            params,
+        );
+
+        let params = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        assert_vec_eq(
+            Mapping::<B>::from_params(params.clone()).get_params(),
+            params,
+        );
+
+        let params = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        assert_vec_eq(
+            Mapping::<B>::from_params(params.clone()).get_params(),
+            params,
+        );
+    }
 
     #[test]
     fn test_warp_points() {
-        type MyBackend = burn::backend::wgpu::JitBackend<WgpuRuntime<AutoGraphicsApi, f32, i32>>;
         let device = Default::default();
 
-        let map = Mapping::<MyBackend>::from_matrix(
+        let map = Mapping::<B>::from_matrix(
             array![
                 [1.13411823, 4.38092511, 9.315785],
                 [1.37351153, 5.27648111, 1.60252762],
@@ -645,20 +684,18 @@ mod test_warps {
         );
         let point = Tensor::from_floats([[0.0, 0.0]], &device);
         let warpd = map.warp_points(point);
-        Tensor::<MyBackend, 2>::from_floats([[3.56534624, 0.61332092]], &device)
+        Tensor::<B, 2>::from_floats([[3.56534624, 0.61332092]], &device)
             .into_data()
             .assert_approx_eq(&warpd.into_data(), 3);
     }
 
     #[test]
     fn test_updowngrade() {
-        type MyBackend = burn::backend::wgpu::JitBackend<WgpuRuntime<AutoGraphicsApi, f32, i32>>;
-
-        let map = Mapping::<MyBackend>::from_matrix(Array2::eye(3), TransformationType::Unknown);
+        let map = Mapping::<B>::from_matrix(Array2::eye(3), TransformationType::Unknown);
         assert!(map.upgrade().kind == TransformationType::Unknown);
         assert!(map.downgrade().kind == TransformationType::Unknown);
 
-        let mut map = Mapping::<MyBackend>::identity();
+        let mut map = Mapping::<B>::identity();
         assert!(map.kind == TransformationType::Identity);
 
         map = map.upgrade();

@@ -212,7 +212,10 @@ where
             let (img, _) = map.transform(None, Some(offset.clone())).warp_tensor3(
                 frame.clone(),
                 (canvas_h.ceil() as usize, canvas_w.ceil() as usize),
-                Some(Tensor::zeros(Shape::new([P::CHANNEL_COUNT as usize]), &map.device())),
+                Some(Tensor::zeros(
+                    Shape::new([P::CHANNEL_COUNT as usize]),
+                    &map.device(),
+                )),
             );
             let img = tensor3_to_image::<P, B>(img);
             let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
