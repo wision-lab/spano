@@ -28,7 +28,11 @@ def main(root):
             st.selectbox(
                 "Select Sequence:",
                 sorted(
-                    [str(i) for i in Path(root).glob("*") if i.is_dir() and not i.stem.startswith(".")],
+                    [
+                        str(i)
+                        for i in Path(root).glob("*")
+                        if i.is_dir() and not i.stem.startswith(".")
+                    ],
                     key=os.path.getmtime,
                     reverse=True,
                 ),
@@ -39,9 +43,19 @@ def main(root):
         col1, col2 = st.columns(2)
 
         with col1:
-            show_video(sequence / "binary.mp4", subheader="**Raw Data**", loop=True, autoplay=True)
+            show_video(
+                sequence / "binary.mp4",
+                subheader="**Raw Data**",
+                loop=True,
+                autoplay=True,
+            )
         with col2:
-            show_video(sequence / "preview.mp4", subheader="**Naive Reconstruction**", loop=True, autoplay=True)
+            show_video(
+                sequence / "preview.mp4",
+                subheader="**Naive Reconstruction**",
+                loop=True,
+                autoplay=True,
+            )
 
     with st.expander("**Stabilized Video**", expanded=False):
         lvls = natsorted(sequence.glob("lvl-*.mp4"))
@@ -64,7 +78,8 @@ def main(root):
                         width: 100%;
                     }
                 </style>
-                """, unsafe_allow_html=True
+                """,
+                unsafe_allow_html=True,
             )
             st.image(str(pano_path))
 
