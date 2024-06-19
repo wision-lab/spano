@@ -144,6 +144,10 @@ pub struct PanoArgs {
     /// Assumes the data is bitpacked along the width dimension, to disable unpacking, pass this flag.
     #[arg(long, action)]
     pub not_bitpacked: bool,
+
+    /// Instead of matching every virtual exposure to the next, skip some.
+    #[arg(long, default_value_t = 1, value_parser=non_zero)]
+    pub step: usize,
 }
 
 #[derive(Subcommand, Debug, Clone)]

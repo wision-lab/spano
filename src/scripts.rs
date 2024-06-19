@@ -22,7 +22,7 @@ use photoncube2video::{
 };
 use pyo3::prelude::*;
 use rayon::{
-    iter::{IntoParallelIterator, ParallelIterator},
+    iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator},
     slice::ParallelSlice,
 };
 use tempfile::tempdir;
@@ -243,10 +243,10 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
                 .min(lvls_w as u32)
                 .min(pano_args.lk_args.max_lvls);
 
-            let num_ves = slice.len_of(Axis(0)) / pano_args.burst_size;
+            let num_ves = (slice.len_of(Axis(0)) / pano_args.burst_size) / pano_args.step;
             let num_frames_per_chunk = pano_args.burst_size / pano_args.granularity;
             let mut mappings: Vec<Mapping> = vec![Mapping::from_params(vec![0.0; 2]); num_ves - 1];
-            let mut virtual_exposures: Vec<_> = vec![];
+            let mut virtual_exposures;
 
             // Preload all data at given granularity
             let granular_frames: Vec<GrayImage> = slice.axis_chunks_iter(Axis(0), pano_args.granularity)
@@ -328,7 +328,7 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
 
                 // Compute virtual exposure by merging `num_frames_per_chunk` granular frames, and downscaling result
                 virtual_exposures = (
-                    granular_frames.par_chunks(num_frames_per_chunk),
+                    granular_frames.par_chunks(num_frames_per_chunk).step_by(pano_args.step),
                     interpd_maps.par_chunks(num_frames_per_chunk),
                 )
                     .into_par_iter()
@@ -391,9 +391,18 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
             }
             // ----------------------------------------------------------------------------------
 
+            // Interpolate mapping to every granular frame
+            let acc_maps = Mapping::accumulate_wrt_idx(mappings.clone(), pano_args.wrt);
+            let interpd_maps = Mapping::interpolate_array(
+                Array1::linspace(0.0, (num_ves - 1) as f32, num_ves).to_vec(),
+                acc_maps,
+                Array1::linspace(0.0, (num_ves - 1) as f32, granular_frames.len())
+                    .to_vec(),
+            );
+
             let canvas = merge_images(
-                &Mapping::accumulate_wrt_idx(mappings.clone(), pano_args.wrt),
-                &virtual_exposures,
+                &interpd_maps,
+                &granular_frames,
                 None,
             )?;
 
