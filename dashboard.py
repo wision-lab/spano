@@ -39,23 +39,29 @@ def main(root):
             )
         )
 
-    with st.expander("**Captured Data**", expanded=False):
+    with st.expander("**Captured Data**", expanded=True):
         col1, col2 = st.columns(2)
 
         with col1:
-            show_video(
-                sequence / "binary.mp4",
-                subheader="**Raw Data**",
-                loop=True,
-                autoplay=True,
-            )
+            bin_paths = list(sequence.glob("binary*.mp4"))
+
+            if bin_paths:
+                show_video(
+                    bin_paths[0],
+                    subheader="**Raw Data**",
+                    loop=True,
+                    autoplay=True,
+                )
         with col2:
-            show_video(
-                sequence / "preview.mp4",
-                subheader="**Naive Reconstruction**",
-                loop=True,
-                autoplay=True,
-            )
+            avg_paths = list(sequence.glob("avg*.mp4"))
+
+            if avg_paths:
+                show_video(
+                    avg_paths[0],
+                    subheader="**Naive Reconstruction**",
+                    loop=True,
+                    autoplay=True,
+                )
 
     with st.expander("**Stabilized Video**", expanded=False):
         lvls = natsorted(sequence.glob("lvl-*.mp4"))
