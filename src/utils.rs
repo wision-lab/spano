@@ -84,6 +84,8 @@ pub fn animate_warp(
         out_path.unwrap_or("out.mp4"),
         fps.unwrap_or(25u64),
         num_frames as u64,
+        None,
+        None,
         Some("Making Video..."),
         None,
     );
@@ -166,6 +168,8 @@ pub fn animate_hierarchical_warp(
         out_path.unwrap_or("out.mp4"),
         fps.unwrap_or(25u64),
         num_frames as u64,
+        None,
+        None,
         Some("Making Video..."),
         None,
     );
@@ -234,6 +238,8 @@ where
         out_path.unwrap_or("out.mp4"),
         fps.unwrap_or(25u64),
         frames.len() as u64,
+        None,
+        None,
         Some("Stabilizing..."),
         None,
     );

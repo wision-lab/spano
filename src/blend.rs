@@ -163,7 +163,7 @@ where
     let weights = distance_transform((w, h));
     let weights = weights.slice(s![.., .., NewAxis]);
     let merge = |dst: &mut [f32], src: &[f32]| {
-        // Redefine c because otherwise we capture outside scope and stuf breaks, not sure why.
+        // Redefine c because otherwise we capture outside scope and stuff breaks, not sure why.
         let c = src.len() - 1;
 
         // Multiply pixel value with blend coefficient and add it to running sum

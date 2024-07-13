@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 pub use clap::Parser;
 use clap::{Args, Subcommand};
 use photoncube2video::transforms::Transform;
@@ -130,11 +132,11 @@ pub struct PanoArgs {
 
     /// Path of color filter array to use for demosaicing
     #[arg(long, default_value = None)]
-    pub cfa_path: Option<String>,
+    pub cfa_path: Option<PathBuf>,
 
     /// Path of inpainting mask to use for filtering out dead/hot pixels
     #[arg(long, num_args(0..))]
-    pub inpaint_path: Vec<String>,
+    pub inpaint_path: Vec<PathBuf>,
 
     /// Number of consecutive binary frames that will be merged together with identity transform and considered as
     /// new granular unit. This greatly speeds up computations and memory requirements, at the cost of potential motion blur

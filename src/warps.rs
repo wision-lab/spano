@@ -13,7 +13,7 @@ use ndarray::{
 use ndarray_interp::interp1d::{CubicSpline, Interp1DBuilder, Linear};
 use ndarray_linalg::solve::Inverse;
 use num_traits::AsPrimitive;
-use numpy::{PyArray1, PyArray2, PyArray3, ToPyArray};
+use numpy::{PyArray1, PyArray2, PyArray3, PyArrayMethods, ToPyArray};
 use photoncube2video::transforms::{array3_to_image, ref_image_to_array3};
 use pyo3::{prelude::*, types::PyType};
 use rayon::{
@@ -350,9 +350,13 @@ impl Mapping {
         name = "from_matrix",
         text_signature = "(cls, mat: np.ndarray, kind: str) -> Self"
     )]
-    pub fn from_matrix_py(_: &PyType, mat: &PyArray2<f32>, kind: &str) -> Result<Self> {
+    pub fn from_matrix_py(
+        _: &Bound<'_, PyType>,
+        mat: &Bound<'_, PyArray2<f32>>,
+        kind: &str,
+    ) -> Result<Self> {
         Ok(Self::from_matrix(
-            mat.to_owned_array(),
+            mat.to_owned().to_owned_array(),
             TransformationType::from_str(kind)?,
         ))
     }
@@ -426,9 +430,9 @@ impl Mapping {
         py: Python<'_>,
         maps: Vec<Self>,
         sizes: Vec<(usize, usize)>,
-    ) -> (&PyArray1<f32>, Self) {
+    ) -> (Bound<'_, PyArray1<f32>>, Self) {
         let (extent, offset) = Self::maximum_extent(&maps, &sizes);
-        (extent.to_pyarray(py), offset)
+        (extent.to_pyarray_bound(py), offset)
     }
 
     /// Interpolate a list of Mappings and query a single point.
@@ -645,9 +649,10 @@ impl Mapping {
     pub fn warp_points_py<'py>(
         &'py self,
         py: Python<'py>,
-        points: &PyArray2<f32>,
-    ) -> &PyArray2<f32> {
-        self.warp_points(&points.to_owned_array()).to_pyarray(py)
+        points: &Bound<'_, PyArray2<f32>>,
+    ) -> Bound<'_, PyArray2<f32>> {
+        self.warp_points(&points.to_owned().to_owned_array())
+            .to_pyarray_bound(py)
     }
 
     /// Get location of corners of an image of shape `size` once warped with `self`.
@@ -655,8 +660,12 @@ impl Mapping {
         name = "corners",
         text_signature = "(self, size: (int, int)) -> np.ndarray"
     )]
-    pub fn corners_py<'py>(&'py self, py: Python<'py>, size: (usize, usize)) -> &PyArray2<f32> {
-        self.corners(size).to_pyarray(py)
+    pub fn corners_py<'py>(
+        &'py self,
+        py: Python<'py>,
+        size: (usize, usize),
+    ) -> Bound<'_, PyArray2<f32>> {
+        self.corners(size).to_pyarray_bound(py)
     }
 
     /// Equivalent to getting minimum and maximum x/y coordinates of `corners`.
@@ -669,9 +678,9 @@ impl Mapping {
         &'py self,
         py: Python<'py>,
         size: (usize, usize),
-    ) -> (&PyArray1<f32>, &PyArray1<f32>) {
+    ) -> (Bound<'_, PyArray1<f32>>, Bound<'_, PyArray1<f32>>) {
         let (min, max) = self.extent(size);
-        (min.to_pyarray(py), max.to_pyarray(py))
+        (min.to_pyarray_bound(py), max.to_pyarray_bound(py))
     }
 
     /// Warp array using mapping into a new buffer of shape `out_size`.
@@ -684,22 +693,22 @@ impl Mapping {
     pub fn warp_array3_py<'py>(
         &'py self,
         py: Python<'py>,
-        data: &PyArray3<f32>,
+        data: &Bound<'_, PyArray3<f32>>,
         out_size: (usize, usize),
         background: Option<Vec<f32>>,
-    ) -> (&PyArray3<f32>, &PyArray2<bool>) {
+    ) -> (Bound<'_, PyArray3<f32>>, Bound<'_, PyArray2<bool>>) {
         let (out, valid) = self.warp_array3(
             unsafe { &data.as_array() },
             out_size,
             background.map(Array1::from_vec),
         );
-        (out.to_pyarray(py), valid.to_pyarray(py))
+        (out.to_pyarray_bound(py), valid.to_pyarray_bound(py))
     }
 
     #[getter(mat)]
     pub fn mat_getter<'py>(&'py self, py: Python<'py>) -> Result<Py<PyAny>> {
         // See: https://github.com/PyO3/rust-numpy/issues/408
-        let py_arr = self.mat.to_pyarray(py).to_owned().into_py(py);
+        let py_arr = self.mat.to_pyarray_bound(py).to_owned().into_py(py);
         py_arr
             .getattr(py, "setflags")?
             .call1(py, (false, None::<bool>, None::<bool>))?;
@@ -707,7 +716,7 @@ impl Mapping {
     }
 
     #[setter(mat)]
-    pub fn mat_setter(&mut self, arr: &PyArray2<f32>) -> Result<()> {
+    pub fn mat_setter(&mut self, arr: &Bound<'_, PyArray2<f32>>) -> Result<()> {
         self.mat = arr.to_owned_array();
         Ok(())
     }

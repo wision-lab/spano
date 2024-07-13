@@ -10,10 +10,10 @@ pub mod warps;
 
 use pyo3::prelude::*;
 
-use crate::{scripts::__pyo3_get_function_cli_entrypoint, warps::Mapping};
+use crate::{scripts::cli_entrypoint, warps::Mapping};
 
 #[pymodule]
-fn spano(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
+fn spano(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_wrapped(wrap_pyfunction!(cli_entrypoint))?;
     m.add_class::<Mapping>()?;
     Ok(())

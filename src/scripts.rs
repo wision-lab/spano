@@ -14,7 +14,7 @@ use indicatif::{ParallelProgressIterator, ProgressStyle};
 use ndarray::{Array1, Axis, Slice};
 use photoncube2video::{
     cube::PhotonCube,
-    signals::DeferedSignal,
+    signals::DeferredSignal,
     transforms::{
         apply_transforms, array2_to_grayimage, interpolate_where_mask, process_colorspad,
         unpack_single,
@@ -172,7 +172,7 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
     // Start by telling python to not intercept CTRL+C signal,
     // Otherwise we won't get it here and will not be interruptable.
     // See: https://github.com/PyO3/pyo3/pull/3560
-    let _defer = DeferedSignal::new(py, "SIGINT")?;
+    let _defer = DeferredSignal::new(py, "SIGINT")?;
 
     // Parse arguments defined in struct
     // Since we're actually calling this via python, the first argument
@@ -215,10 +215,10 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
             // Any transforms (i.e: flipud) can be applied here too.
             let mut cube = PhotonCube::open(cube_path)?;
             if let Some(cfa_path) = &pano_args.cfa_path {
-                cube.load_cfa(cfa_path)?;
+                cube.load_cfa(cfa_path.to_path_buf())?;
             }
             for inpaint_path in pano_args.inpaint_path.iter() {
-                cube.load_mask(inpaint_path)?;
+                cube.load_mask(inpaint_path.to_path_buf())?;
             }
 
             let view = cube.view()?;
@@ -396,15 +396,10 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
             let interpd_maps = Mapping::interpolate_array(
                 Array1::linspace(0.0, (num_ves - 1) as f32, num_ves).to_vec(),
                 acc_maps,
-                Array1::linspace(0.0, (num_ves - 1) as f32, granular_frames.len())
-                    .to_vec(),
+                Array1::linspace(0.0, (num_ves - 1) as f32, granular_frames.len()).to_vec(),
             );
 
-            let canvas = merge_images(
-                &interpd_maps,
-                &granular_frames,
-                None,
-            )?;
+            let canvas = merge_images(&interpd_maps, &granular_frames, None)?;
 
             canvas.save(&args.output.unwrap_or("out.png".to_string()))?;
             Ok(())
