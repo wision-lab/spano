@@ -366,6 +366,9 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
                     Some(format!("({}/{}): Matching...", num_lvls - lvl, num_lvls).as_str()),
                 )?;
 
+                // Augment mapping type every iteration
+                mappings = mappings.iter().map(|m| m.upgrade()).collect();
+
                 if let Some(viz_path) = args.viz_output.clone() {
                     let parent = Path::new(&viz_path)
                         .parent()
