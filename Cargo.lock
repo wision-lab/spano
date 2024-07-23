@@ -2311,7 +2311,7 @@ checksum = "3c5e1a9a646d36c3599cd173a41282daf47c44583ad367b8e6837255952e5c67"
 
 [[package]]
 name = "spano"
-version = "0.3.1"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "approx 0.5.1",

@@ -224,7 +224,11 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
             let view = cube.view()?;
             let slice = view.slice_axis(
                 Axis(0),
-                Slice::new(pano_args.start.unwrap_or(0), pano_args.end, 1),
+                Slice::new(
+                    pano_args.start.unwrap_or(0),
+                    pano_args.end.map(|v| v.min(view.len_of(Axis(0)) as isize)),
+                    1,
+                ),
             );
 
             let (_, h, w) = view.dim();
