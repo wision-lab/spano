@@ -104,7 +104,7 @@ pub struct PanoArgs {
 
     /// Index of binary frame at which to start the preview from (inclusive)
     #[arg(short, long, default_value = None)]
-    pub start: Option<isize>,
+    pub start: Option<usize>,
 
     /// Index of binary frame at which to stop the preview at (exclusive)
     #[arg(short, long, default_value = None)]
