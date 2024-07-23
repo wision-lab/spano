@@ -22,7 +22,10 @@ dev = [
     "black",
     "imageio",
     "matplotlib",
-    "invoke"
+    "invoke",
+    "streamlit",
+    "streamlit-image-comparison",
+    "natsort"
 ]
 
 [tool.maturin]

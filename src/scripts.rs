@@ -317,7 +317,7 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
                 .collect();
             let (w, h) = granular_frames[0].dimensions();
 
-            // -------------------- Main hiarchical matching process ----------------------------
+            // -------------------- Main hierarchical matching process ----------------------------
             for lvl in (0..num_lvls).rev() {
                 // Interpolate mappings to all bitplanes
                 mappings = mappings.iter().map(|m| m.rescale(0.5)).collect();
@@ -369,6 +369,29 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
                     pano_args.lk_args.patience,
                     Some(format!("({}/{}): Matching...", num_lvls - lvl, num_lvls).as_str()),
                 )?;
+
+                // If it's the first iteration, save a baseline pano using the granular frames
+                if lvl == num_lvls - 1 {
+                    // Accumulate wrt center frame
+                    let acc_maps = Mapping::accumulate_wrt_idx(mappings.clone(), pano_args.wrt);
+
+                    // Interpolate from all virtual exposures to all granular frames (if step != 1 these are not equal)
+                    let interpd_maps = Mapping::interpolate_array(
+                        Array1::linspace(0.0, (num_ves - 1) as f32, num_ves).to_vec(),
+                        acc_maps,
+                        Array1::linspace(0.0, (num_ves - 1) as f32, granular_frames.len()).to_vec(),
+                    );
+
+                    // Scale back to original size
+                    let scaled_mappings: Vec<_> = interpd_maps
+                        .iter()
+                        .map(|m| m.rescale(1.0 / (downscale as f32)))
+                        .collect();
+
+                    // Create baseline pano and save.
+                    let canvas = merge_images(&scaled_mappings, &granular_frames, None)?;
+                    canvas.save("baseline.png")?;
+                }
 
                 // Augment mapping type every iteration
                 mappings = mappings.iter().map(|m| m.upgrade()).collect();
