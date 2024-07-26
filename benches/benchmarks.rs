@@ -111,7 +111,7 @@ pub fn benchmark_merge_images(c: &mut Criterion) {
 
     c.bench_function("merge_images", |b| {
         b.iter(|| {
-            let _ = merge_images(&maps, &imgs, None).unwrap();
+            let _ = merge_images(&maps, &imgs, None, None).unwrap();
         })
     });
 }

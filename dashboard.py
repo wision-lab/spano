@@ -177,30 +177,31 @@ def main(root):
 
     with st.expander("**Reconstructed Panorama**", expanded=False):
         if (pano_path := sequence / "panorama.png").exists():
-            # # See: https://discuss.streamlit.io/t/how-can-i-center-a-picture/30995/3
-            # st.markdown(
-            #     """
-            #     <style>
-            #         button[title^=Exit]+div [data-testid=stImage]{
-            #             text-align: center;
-            #             display: block;
-            #             margin-left: auto;
-            #             margin-right: auto;
-            #             width: 100%;
-            #         }
-            #     </style>
-            #     """,
-            #     unsafe_allow_html=True,
-            # )
-            # st.image(str(pano_path))
-
-            component = image_comparison(
-                img1=str(sequence / "baseline.png"),
-                img2=str(pano_path),
-                label1="Baseline Panorama",
-                label2="Our Reconstruction",
-                vertical=st.toggle("Vertical Compare")
-            )
+            if not (baseline_path := sequence / "baseline.png").exists():
+                # See: https://discuss.streamlit.io/t/how-can-i-center-a-picture/30995/3
+                st.markdown(
+                    """
+                    <style>
+                        button[title^=Exit]+div [data-testid=stImage]{
+                            text-align: center;
+                            display: block;
+                            margin-left: auto;
+                            margin-right: auto;
+                            width: 100%;
+                        }
+                    </style>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                st.image(str(pano_path))
+            else:
+                image_comparison(
+                    img1=str(baseline_path),
+                    img2=str(pano_path),
+                    label1="Baseline Panorama",
+                    label2="Our Reconstruction",
+                    vertical=st.toggle("Vertical Compare")
+                )
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

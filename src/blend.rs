@@ -10,7 +10,7 @@ use ndarray::{
 use photoncube2video::transforms::{array3_to_image, ref_image_to_array3};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-use crate::warps::Mapping;
+use crate::{utils::get_pbar, warps::Mapping};
 
 /// Computes normalized and clipped distance transform (bwdist) for rectangle that fills image.
 #[cached(sync_writes = true)]
@@ -133,6 +133,7 @@ pub fn merge_arrays<S>(
     mappings: &[Mapping],
     frames: &[ArrayBase<S, Ix3>],
     size: Option<(usize, usize)>,
+    message: Option<&str>,
 ) -> Result<Array3<f32>>
 where
     S: RawData<Elem = f32> + ndarray::Data,
@@ -183,6 +184,7 @@ where
         }
     });
 
+    let pbar = get_pbar(frames.len(), message);
     for (frame, map) in frames.iter().zip(mappings) {
         let frame = concatenate(Axis(2), &[frame.view(), weights.view()])?;
         map.transform(None, Some(offset.clone()))
@@ -194,6 +196,7 @@ where
                 None,
                 Some(merge),
             );
+        pbar.inc(1);
     }
 
     let canvas = canvas.slice(s![.., .., ..c]).to_owned() / canvas.slice(s![.., .., -1..]);
@@ -205,6 +208,7 @@ pub fn merge_images<P>(
     mappings: &[Mapping],
     frames: &[Image<P>],
     size: Option<(usize, usize)>,
+    message: Option<&str>,
 ) -> Result<Image<P>>
 where
     P: Pixel + Send + Sync,
@@ -215,6 +219,6 @@ where
         .iter()
         .map(|f| ref_image_to_array3(f).mapv(f32::from))
         .collect();
-    let merged = merge_arrays(mappings, &frames[..], size.map(|(w, h)| (h, w)))?;
+    let merged = merge_arrays(mappings, &frames[..], size.map(|(w, h)| (h, w)), message)?;
     Ok(array3_to_image(merged.mapv(<P as Pixel>::Subpixel::clamp)))
 }
