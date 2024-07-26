@@ -140,7 +140,7 @@ def main(root):
             for i in Path(root).glob("samples/")
             if i.is_dir() and not i.stem.startswith(".")
         )
-        short_names = {str(Path(i).name.lstrip("spano_")): i for i in samples + latest}
+        short_names = {str(Path(i).name.replace("spano_", "")): i for i in samples + latest}
         short_name = st.selectbox("Select Sequence:", short_names.keys())
         sequence = Path(short_names[short_name])
 
