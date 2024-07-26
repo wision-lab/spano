@@ -197,7 +197,9 @@ def main(root):
             component = image_comparison(
                 img1=str(sequence / "baseline.png"),
                 img2=str(pano_path),
-                vertical=True
+                label1="Baseline Panorama",
+                label2="Our Reconstruction",
+                vertical=st.toggle("Vertical Compare")
             )
 
 if __name__ == "__main__":

@@ -208,6 +208,7 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
                     "Argument `granularity` must evenly divide `burst-size`."
                 ));
             }
+            let granulars_per_burst = pano_args.burst_size / pano_args.granularity;
 
             // Load and pre-process chunks of frames from photoncube
             // We unpack the bitplanes, avergae them in groups of `burst_size`,
@@ -375,21 +376,29 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
                     // Accumulate wrt center frame
                     let acc_maps = Mapping::accumulate_wrt_idx(mappings.clone(), pano_args.wrt);
 
-                    // Interpolate from all virtual exposures to all granular frames (if step != 1 these are not equal)
-                    let interpd_maps = Mapping::interpolate_array(
-                        Array1::linspace(0.0, (num_ves - 1) as f32, num_ves).to_vec(),
-                        acc_maps,
-                        Array1::linspace(0.0, (num_ves - 1) as f32, granular_frames.len()).to_vec(),
-                    );
 
                     // Scale back to original size
-                    let scaled_mappings: Vec<_> = interpd_maps
+                    let scaled_mappings: Vec<_> = acc_maps
                         .iter()
                         .map(|m| m.rescale(1.0 / (downscale as f32)))
                         .collect();
 
-                    // Create baseline pano and save.
-                    let canvas = merge_images(&scaled_mappings, &granular_frames, None)?;
+                    // Interpolate from all virtual exposures to all granular frames (if step != 1 these are not equal)
+                    let interpd_maps = Mapping::interpolate_array(
+                        Array1::linspace(0.0, (num_ves - 1) as f32, num_ves).to_vec(),
+                        scaled_mappings,
+                        Array1::linspace(0.0, (num_ves - 1) as f32, granular_frames.len()).to_vec(),
+                    );
+                    
+                    // Repeat mapping such that it is constant for the duration of a burst frame
+                    let interpd_maps: Vec<_> = interpd_maps
+                        .into_iter()
+                        .step_by(granulars_per_burst)
+                        .flat_map(|n| std::iter::repeat(n).take(granulars_per_burst))
+                        .collect();
+
+                    // Create baseline pano and save
+                    let canvas = merge_images(&interpd_maps, &granular_frames, None)?;
                     canvas.save("baseline.png")?;
                 }
 
