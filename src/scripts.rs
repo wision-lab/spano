@@ -415,33 +415,35 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
             // ----------------------------------------------------------------------------------
 
             // Save a baseline pano using the first lvl maps 
-            // Accumulate wrt center frame
-            let acc_maps = Mapping::accumulate_wrt_idx(all_mappings[0].clone(), pano_args.wrt);
+            if let Some(baseline_path) = &pano_args.baseline_path {
+                // Accumulate wrt center frame
+                let acc_maps = Mapping::accumulate_wrt_idx(all_mappings[0].clone(), pano_args.wrt);
 
-            // Scale back to original size
-            let scaled_mappings: Vec<_> = acc_maps
-                .iter()
-                .map(|m| m.rescale(1.0 / ((1 << (num_lvls-1)) as f32)))
-                .collect();
+                // Scale back to original size
+                let scaled_mappings: Vec<_> = acc_maps
+                    .iter()
+                    .map(|m| m.rescale(1.0 / ((1 << (num_lvls-1)) as f32)))
+                    .collect();
 
-            // Interpolate from all virtual exposures to all granular frames (if step != 1 these are not equal)
-            let interpd_maps = Mapping::interpolate_array(
-                Array1::linspace(0.0, (num_ves - 1) as f32, num_ves).to_vec(),
-                scaled_mappings,
-                Array1::linspace(0.0, (num_ves - 1) as f32, granular_frames.len()).to_vec(),
-            );
-            
-            // Repeat mapping such that it is constant for the duration of a burst frame
-            let interpd_maps: Vec<_> = interpd_maps
-                .into_iter()
-                .step_by(num_frames_per_chunk)
-                .flat_map(|n| std::iter::repeat(n).take(num_frames_per_chunk))
-                .collect();
-
-            // Create baseline pano and save
-            let canvas = merge_images(&interpd_maps, &granular_frames, None, Some("Making Baseline Pano..."))?;
-            canvas.save("baseline.png")?;
+                // Interpolate from all virtual exposures to all granular frames (if step != 1 these are not equal)
+                let interpd_maps = Mapping::interpolate_array(
+                    Array1::linspace(0.0, (num_ves - 1) as f32, num_ves).to_vec(),
+                    scaled_mappings,
+                    Array1::linspace(0.0, (num_ves - 1) as f32, granular_frames.len()).to_vec(),
+                );
                 
+                // Repeat mapping such that it is constant for the duration of a burst frame
+                let interpd_maps: Vec<_> = interpd_maps
+                    .into_iter()
+                    .step_by(num_frames_per_chunk)
+                    .flat_map(|n| std::iter::repeat(n).take(num_frames_per_chunk))
+                    .collect();
+
+                // Create baseline pano and save
+                let canvas = merge_images(&interpd_maps, &granular_frames, None, Some("Making Baseline Pano..."))?;
+                canvas.save(baseline_path)?;
+            }
+            
             Ok(())
         }
     }

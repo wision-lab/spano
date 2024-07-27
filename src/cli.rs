@@ -138,6 +138,10 @@ pub struct PanoArgs {
     #[arg(long, num_args(0..))]
     pub inpaint_path: Vec<PathBuf>,
 
+    /// If provided, run baseline method and save panorama to this path
+    #[arg(long, default_value = None)]
+    pub baseline_path: Option<PathBuf>,
+
     /// Number of consecutive binary frames that will be merged together with identity transform and considered as
     /// new granular unit. This greatly speeds up computations and memory requirements, at the cost of potential motion blur
     #[arg(long, default_value_t = 8, value_parser=non_zero)]
