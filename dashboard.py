@@ -137,7 +137,7 @@ def main(root):
         )
         samples = natsorted(
             str(i)
-            for i in Path(root).glob("samples/")
+            for i in Path(root).glob("samples/*")
             if i.is_dir() and not i.stem.startswith(".")
         )
         short_names = {str(Path(i).name.replace("spano_", "")): i for i in samples + latest}
