@@ -3,11 +3,10 @@
 ## Installing
 
 First make sure you have an adequate rust toolchain installed ([install from here](https://rustup.rs/)), and gcc installed. 
-Due to limitations in OpalKelly, we are currently limited to py36.
 
 It's best practice to create a virtual environment, you can use micromamba to do so: 
 ```shell
-micromamba create --name py36 python=3.6
+micromamba create --name py312 python=3.12
 ```
 
 Then activate your environment, and in it install `spano`, either directly form this repo:
