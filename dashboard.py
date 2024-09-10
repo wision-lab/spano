@@ -5,6 +5,7 @@ Run as: streamlit run dashboard.py
 from pathlib import Path
 import argparse
 import os
+import shutil
 
 import streamlit as st
 from streamlit_image_comparison import *
@@ -126,6 +127,7 @@ def main(root):
     st.title("\nPanoramas from Photons")
 
     with st.sidebar:
+        filter_incomplete = st.checkbox("Filter Incomplete", value=True)
         latest = sorted(
             [
                 str(i)
@@ -135,6 +137,10 @@ def main(root):
             key=os.path.getmtime,
             reverse=True,
         )
+        
+        if filter_incomplete:
+            latest = [i for i in latest if (Path(i) / "panorama.png").exists()]
+
         samples = natsorted(
             str(i)
             for i in Path(root).glob("samples/*")
@@ -143,6 +149,11 @@ def main(root):
         short_names = {str(Path(i).name.replace("spano_", "")): i for i in samples + latest}
         short_name = st.selectbox("Select Sequence:", short_names.keys())
         sequence = Path(short_names[short_name])
+        
+        if st.button("Trash"):
+            Path(sequence.parent / "trash").mkdir(exist_ok=True)
+            sequence.rename(sequence.parent / "trash" / sequence.name)
+            st.refresh()
 
     with st.expander("**Captured Data**", expanded=True):
         col1, col2 = st.columns(2)
@@ -169,8 +180,8 @@ def main(root):
                 )
 
     with st.expander("**Stabilized Video**", expanded=False):
-        lvls = natsorted(sequence.glob("lvl-*.mp4"))
-        tabs = st.tabs([f"   Level #{i+1}   " for i in range(len(lvls))])
+        lvls = natsorted(sequence.glob("lvl-*.mp4"), reverse=True)
+        tabs = st.tabs([f"   Level #{i+1}   " for i in range(len(lvls)-1, -1, -1)])
         for tab, video in zip(tabs, lvls):
             with tab:
                 show_video(video, loop=True, autoplay=True)
