@@ -32,7 +32,7 @@ heapless = "0.8.0"
 
 # When developing locally you can use a local copy of dependencies like so:
 # photoncube2video = { path = "../photoncube2video" }
-photoncube2video = { git = "https://github.com/WISION-Lab/photoncube2video" }
+photoncube2video = { git = "https://github.com/WISION-Lab/photoncube2video", tag="v0.3.10" }
 
 pyo3 = { version = "0.21.2", features = ["extension-module", "anyhow"] }
 strum_macros = "0.26.4"

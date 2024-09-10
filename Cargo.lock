@@ -1702,7 +1702,7 @@ dependencies = [
 [[package]]
 name = "photoncube2video"
 version = "0.3.10"
-source = "git+https://github.com/WISION-Lab/photoncube2video#778fb13697762dc9915d7cd58e0118a626cbc912"
+source = "git+https://github.com/WISION-Lab/photoncube2video?tag=v0.3.10#778fb13697762dc9915d7cd58e0118a626cbc912"
 dependencies = [
  "anyhow",
  "clap",
