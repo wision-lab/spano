@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use image::{
-    imageops::{resize, FilterType},
+    imageops::{grayscale, resize, FilterType},
     io::Reader as ImageReader,
     GrayImage, Rgb,
 };
@@ -82,34 +82,67 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
 
     // Perform Matching
     let (mapping, params_history_str, num_steps) = if !lk_args.multi {
-        // Register images
-        let (mapping, params_history) = iclk(
-            &img1,
-            &img2,
-            Mapping::from_params(vec![0.0; 8]),
-            weights.as_ref(),
-            Some(lk_args.iterations),
-            Some(lk_args.early_stop),
-            Some(lk_args.patience),
-            Some("Matching..."),
-        )?;
+        // Conditionally convert images to grayscale, then register images
+        let (mapping, params_history) = if lk_args.grayscale {
+            let img1 = grayscale(&img1);
+            let img2 = grayscale(&img2);
+
+            iclk(
+                &img1,
+                &img2,
+                Mapping::from_params(vec![0.0; 8]),
+                weights.as_ref(),
+                Some(lk_args.iterations),
+                Some(lk_args.early_stop),
+                Some(lk_args.patience),
+                Some("Matching..."),
+            )?
+        } else {
+            iclk(
+                &img1,
+                &img2,
+                Mapping::from_params(vec![0.0; 8]),
+                weights.as_ref(),
+                Some(lk_args.iterations),
+                Some(lk_args.early_stop),
+                Some(lk_args.patience),
+                Some("Matching..."),
+            )?
+        };
         let num_steps = params_history.len();
         let params_history_str = serde_json::to_string_pretty(&params_history)?;
         (mapping, params_history_str, num_steps - 1)
     } else {
-        // Register images
-        let (mapping, params_history) = hierarchical_iclk(
-            &img1,
-            &img2,
-            Mapping::from_params(vec![0.0; 8]),
-            weights.as_ref(),
-            Some(lk_args.iterations),
-            (lk_args.min_size, lk_args.min_size),
-            lk_args.max_lvls,
-            Some(lk_args.early_stop),
-            Some(lk_args.patience),
-            true,
-        )?;
+        // Conditionally convert images to grayscale, then register images
+        let (mapping, params_history) = if lk_args.grayscale {
+            let img1 = grayscale(&img1);
+            let img2 = grayscale(&img2);
+            hierarchical_iclk(
+                &img1,
+                &img2,
+                Mapping::from_params(vec![0.0; 8]),
+                weights.as_ref(),
+                Some(lk_args.iterations),
+                (lk_args.min_size, lk_args.min_size),
+                lk_args.max_lvls,
+                Some(lk_args.early_stop),
+                Some(lk_args.patience),
+                true,
+            )?
+        } else {
+            hierarchical_iclk(
+                &img1,
+                &img2,
+                Mapping::from_params(vec![0.0; 8]),
+                weights.as_ref(),
+                Some(lk_args.iterations),
+                (lk_args.min_size, lk_args.min_size),
+                lk_args.max_lvls,
+                Some(lk_args.early_stop),
+                Some(lk_args.patience),
+                true,
+            )?
+        };
         let num_steps = params_history.values().map(|v| v.len()).sum();
         let params_history_str = serde_json::to_string_pretty(&params_history)?;
         (mapping, params_history_str, num_steps)
@@ -400,7 +433,7 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
                 }
             }
             // ----------------------------------------------------------------------------------
-            
+
             // Save final panorama
             // Interpolate mapping to every granular frame
             let acc_maps = Mapping::accumulate_wrt_idx(mappings.clone(), pano_args.wrt);
@@ -409,12 +442,17 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
                 acc_maps,
                 Array1::linspace(0.0, (num_ves - 1) as f32, granular_frames.len()).to_vec(),
             );
-            let canvas = merge_images(&interpd_maps, &granular_frames, None, Some("Making Panorama..."))?;
+            let canvas = merge_images(
+                &interpd_maps,
+                &granular_frames,
+                None,
+                Some("Making Panorama..."),
+            )?;
             canvas.save(&args.output.unwrap_or("out.png".to_string()))?;
 
             // ----------------------------------------------------------------------------------
 
-            // Save a baseline pano using the first lvl maps 
+            // Save a baseline pano using the first lvl maps
             if let Some(baseline_path) = &pano_args.baseline_path {
                 // Accumulate wrt center frame
                 let acc_maps = Mapping::accumulate_wrt_idx(all_mappings[0].clone(), pano_args.wrt);
@@ -422,7 +460,7 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
                 // Scale back to original size
                 let scaled_mappings: Vec<_> = acc_maps
                     .iter()
-                    .map(|m| m.rescale(1.0 / ((1 << (num_lvls-1)) as f32)))
+                    .map(|m| m.rescale(1.0 / ((1 << (num_lvls - 1)) as f32)))
                     .collect();
 
                 // Interpolate from all virtual exposures to all granular frames (if step != 1 these are not equal)
@@ -431,7 +469,7 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
                     scaled_mappings,
                     Array1::linspace(0.0, (num_ves - 1) as f32, granular_frames.len()).to_vec(),
                 );
-                
+
                 // Repeat mapping such that it is constant for the duration of a burst frame
                 let interpd_maps: Vec<_> = interpd_maps
                     .into_iter()
@@ -440,10 +478,15 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
                     .collect();
 
                 // Create baseline pano and save
-                let canvas = merge_images(&interpd_maps, &granular_frames, None, Some("Making Baseline Pano..."))?;
+                let canvas = merge_images(
+                    &interpd_maps,
+                    &granular_frames,
+                    None,
+                    Some("Making Baseline Pano..."),
+                )?;
                 canvas.save(baseline_path)?;
             }
-            
+
             Ok(())
         }
     }

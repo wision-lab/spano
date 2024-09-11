@@ -387,7 +387,7 @@ impl Mapping {
                 vec![*p1 + 1.0, *p3, *p5, *p2, *p4 + 1.0, *p6, *p7, *p8, 1.0],
                 TransformationType::Projective,
             ),
-            _ => panic!(),
+            _ => panic!("Expected 0, 2, 6 or 8 parameters, got {:}", params.len()),
         };
 
         let mat = Array2::from_shape_vec((3, 3), full_params).unwrap();

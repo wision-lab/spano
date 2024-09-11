@@ -4,17 +4,19 @@ use anyhow::{anyhow, Result};
 use conv::{ValueFrom, ValueInto};
 use image::{
     imageops::{colorops::grayscale, resize, FilterType},
-    GrayImage, Luma, Pixel, Primitive,
+    GrayImage, Luma, Pixel,
 };
 use imageproc::{
     definitions::{Clamp, Image},
-    filter::filter3x3,
     gradients::{HORIZONTAL_SCHARR, VERTICAL_SCHARR},
 };
 use itertools::izip;
-use ndarray::{concatenate, par_azip, s, stack, Array, Array1, Array2, ArrayBase, Axis, NewAxis};
+use ndarray::{
+    concatenate, par_azip, s, stack, Array, Array1, Array2, Array3, ArrayBase, Axis, NewAxis,
+};
 use ndarray_linalg::solve::Inverse;
-use photoncube2video::transforms::{grayimage_to_array2, ref_image_to_array3};
+use ndarray_ndimage::{correlate, BorderMode};
+use photoncube2video::transforms::ref_image_to_array3;
 use rayon::prelude::*;
 
 use crate::{
@@ -23,16 +25,30 @@ use crate::{
 };
 
 /// Compute image gradients using Scharr operator
-/// Returned (dx, dy) pair as HxW arrays.
-pub fn gradients<T>(img: &Image<Luma<T>>) -> (Array2<f32>, Array2<f32>)
+/// Returned (dx, dy) pair as HxWxC arrays.
+pub fn gradients<P>(img: &Image<P>) -> (Array3<f32>, Array3<f32>)
 where
-    T: Primitive,
-    f32: ValueFrom<T>,
+    P: Pixel + Send + Sync,
+    f32: From<<P as Pixel>::Subpixel>,
 {
-    (
-        grayimage_to_array2(filter3x3(img, &HORIZONTAL_SCHARR.map(|v| v as f32))),
-        grayimage_to_array2(filter3x3(img, &VERTICAL_SCHARR.map(|v| v as f32))),
-    )
+    let arr = ref_image_to_array3(img).to_owned().mapv(|v| f32::from(v));
+    let dx = correlate(
+        &arr,
+        &Array3::from_shape_vec((3, 3, 1), HORIZONTAL_SCHARR.to_vec())
+            .expect("Scharr filter should contain 9 elements.")
+            .mapv(|v| v as f32),
+        BorderMode::Reflect,
+        0,
+    );
+    let dy = correlate(
+        &arr,
+        &Array3::from_shape_vec((3, 3, 1), VERTICAL_SCHARR.to_vec())
+            .expect("Scharr filter should contain 9 elements.")
+            .mapv(|v| v as f32),
+        BorderMode::Reflect,
+        0,
+    );
+    (dx, dy)
 }
 
 /// Estimate the warp that maps `img2` to `img1` using the Inverse Compositional Lucas-Kanade algorithm.
@@ -49,18 +65,16 @@ pub fn iclk<P>(
     message: Option<&str>,
 ) -> Result<(Mapping, Vec<Vec<f32>>)>
 where
-    P: Pixel + Send + Sync,
+    P: Pixel + Send + Sync + 'static,
     <P as Pixel>::Subpixel: Send + Sync + 'static,
     <P as Pixel>::Subpixel: ValueInto<f32> + From<u8> + Clamp<f32>,
     f32: ValueFrom<<P as Pixel>::Subpixel> + From<<P as Pixel>::Subpixel>,
 {
-    let im1_gray = grayscale(im1);
-    let im2_gray = grayscale(im2);
-    let (dx, dy) = gradients(&im2_gray);
+    let (dx, dy) = gradients(im2);
 
-    iclk_grayscale(
-        &im1_gray,
-        &im2_gray,
+    iclk_multichannel(
+        &im1,
+        &im2,
         (dx, dy),
         init_mapping,
         im1_weights,
@@ -86,10 +100,10 @@ where
 ///
 /// TODO: Is anything actually enforcing this to be grayscale/single-channel?
 #[allow(clippy::too_many_arguments)]
-pub fn iclk_grayscale<T>(
-    im1_gray: &Image<Luma<T>>,
-    im2_gray: &Image<Luma<T>>,
-    im2_grad: (Array2<f32>, Array2<f32>),
+pub fn iclk_multichannel<P>(
+    im1: &Image<P>,
+    im2: &Image<P>,
+    im2_grad: (Array3<f32>, Array3<f32>),
     init_mapping: Mapping,
     im1_weights: Option<&GrayImage>,
     max_iters: Option<i32>,
@@ -98,28 +112,23 @@ pub fn iclk_grayscale<T>(
     message: Option<&str>,
 ) -> Result<(Mapping, Vec<Vec<f32>>)>
 where
-    T: Primitive + Clamp<f32> + Send + Sync + 'static,
-    f32: ValueFrom<T> + From<T>,
+    P: Pixel + Send + Sync + 'static,
+    f32: ValueFrom<<P as Pixel>::Subpixel> + From<<P as Pixel>::Subpixel>,
 {
     // Initialize values
     let mut params = init_mapping.inverse().get_params();
     let num_params = params.len();
-    let h = im2_gray.height();
-    let w = im2_gray.width();
-    let c = 1;
-    let points = Array::from_shape_fn(((w * h) as usize, 2), |(i, j)| {
-        if j == 0 {
-            i % w as usize
-        } else {
-            i / w as usize
-        }
-    });
+    let h = im2.height() as usize;
+    let w = im2.width() as usize;
+    let c = P::CHANNEL_COUNT as usize;
+    let num_points = w * h;
+    let points = Array::from_shape_fn((num_points, 2), |(i, j)| if j == 0 { i % w } else { i / w });
     let xs = points.column(0).mapv(|v| v as f32);
     let ys = points.column(1).mapv(|v| v as f32);
-    let num_points = (w * h) as usize;
 
     let (img1_array, has_weights) = if let Some(weights) = im1_weights {
-        let mut img1_array = ref_image_to_array3(im1_gray).mapv(|v| f32::from(v));
+        // Concatenate weights as last channel of img1_array if has_weights
+        let mut img1_array = ref_image_to_array3(im1).mapv(|v| f32::from(v));
         img1_array = concatenate(
             Axis(2),
             &[
@@ -131,79 +140,76 @@ where
         )?;
         (img1_array.as_standard_layout().to_owned(), true)
     } else {
-        (ref_image_to_array3(im1_gray).mapv(|v| f32::from(v)), false)
+        (ref_image_to_array3(im1).mapv(|v| f32::from(v)), false)
     };
-    let mut warped_im1gray_pixels = Array2::<f32>::zeros((num_points, img1_array.len_of(Axis(2))));
+    let mut warped_im1gray_pixels = Array2::<f32>::zeros((num_points, c + has_weights as usize));
 
-    let img2_pixels = ref_image_to_array3(im2_gray)
+    let img2_pixels = ref_image_to_array3(im2)
         .mapv(|v| f32::from(v))
-        .into_shape((num_points, 1))?;
+        .into_shape((num_points, c))?;
     let mut valid = Array1::<bool>::from_elem(num_points, false);
 
     // These can be cached, so we init them before the main loop
     let (dx, dy) = im2_grad;
     let (steepest_descent_ic_t, hessian_inv) = match init_mapping.kind {
+        TransformationType::Identity => return Ok((Mapping::identity(), vec![vec![]])),
         TransformationType::Translational => {
-            let steepest_descent_ic_t = stack![
-                Axis(1),
-                dx.into_shape(num_points)?,
-                dy.into_shape(num_points)?
-            ]; // (Nx2)
+            let steepest_descent_ic = stack![
+                Axis(2),
+                dx.into_shape((num_points, c))?,
+                dy.into_shape((num_points, c))?
+            ]; // (HWxCxN)
 
-            let hessian_inv = (steepest_descent_ic_t.clone().permuted_axes([1, 0]))
-                .dot(&steepest_descent_ic_t)
-                .inv()
-                .unwrap();
+            let hessian: Array2<f32> = steepest_descent_ic
+                .axis_iter(Axis(0))
+                .map(|cn| cn.t().dot(&cn))
+                .fold(Array2::<f32>::zeros((num_params, num_params)), |a, b| a + b);
+            let hessian_inv = hessian.inv().unwrap();
 
-            // (Nx2x1)              (2x2)
-            (
-                steepest_descent_ic_t.slice(s![.., .., NewAxis]).to_owned(),
-                hessian_inv,
-            )
+            // (HWxNxC)              (2x2)
+            (steepest_descent_ic.permuted_axes([0, 2, 1]), hessian_inv)
         }
         TransformationType::Affine => {
-            let mut steepest_descent_ic_t = Array2::zeros((num_points, params.len()));
+            let mut steepest_descent_ic = Array3::zeros((num_points, c, 6));
 
             let jacobian_p = {
                 let ones: Array1<f32> = ArrayBase::ones(num_points);
                 let zeros: Array1<f32> = ArrayBase::zeros(num_points);
                 stack![
-                    Axis(0),
-                    stack![Axis(0), xs, zeros, ys, zeros, ones, zeros],
-                    stack![Axis(0), zeros, xs, zeros, ys, zeros, ones]
+                    Axis(1),
+                    stack![Axis(1), xs, zeros, ys, zeros, ones, zeros],
+                    stack![Axis(1), zeros, xs, zeros, ys, zeros, ones]
                 ]
-                .permuted_axes([2, 0, 1])
-            }; // (Nx2x6)
+            }; // (HWx2xN)
 
             let grad_im2 = stack![
                 Axis(2),
-                dx.into_shape((num_points, 1))?,
-                dy.into_shape((num_points, 1))?
-            ]; // (Nx1x2)
+                dx.into_shape((num_points, c))?,
+                dy.into_shape((num_points, c))?
+            ]; // (HWxCx2)
 
             // Perform the batch matrix multiply of grad_im2 @ jacobian_p
             par_azip!(
                 (
-                    mut v in steepest_descent_ic_t.axis_iter_mut(Axis(0)),
+                    mut v in steepest_descent_ic.axis_iter_mut(Axis(0)),
                     a in grad_im2.axis_iter(Axis(0)),
                     b in jacobian_p.axis_iter(Axis(0))
                 )
-                {v.assign(&a.dot(&b).into_shape(params.len()).unwrap())}
+                // {v.assign(&a.dot(&b).into_shape(params.len()).unwrap())}
+                {v.assign(&a.dot(&b))}
             );
 
-            let hessian_inv = (steepest_descent_ic_t.clone().permuted_axes([1, 0]))
-                .dot(&steepest_descent_ic_t)
-                .inv()
-                .unwrap();
+            let hessian: Array2<f32> = steepest_descent_ic
+                .axis_iter(Axis(0))
+                .map(|cn| cn.t().dot(&cn))
+                .fold(Array2::<f32>::zeros((num_params, num_params)), |a, b| a + b);
+            let hessian_inv = hessian.inv().unwrap();
 
-            // (Nx6x1)              (6x6)
-            (
-                steepest_descent_ic_t.slice(s![.., .., NewAxis]).to_owned(),
-                hessian_inv,
-            )
+            // (HWxNxC)            (6x6)
+            (steepest_descent_ic.permuted_axes([0, 2, 1]), hessian_inv)
         }
         TransformationType::Projective => {
-            let mut steepest_descent_ic_t = Array2::zeros((num_points, params.len()));
+            let mut steepest_descent_ic = Array3::zeros((num_points, c, 8));
 
             // dW_dp evaluated at (x, p) and p=0 (identity transform)
             let jacobian_p = {
@@ -213,9 +219,9 @@ where
                 let minus_yy: Vec<f32> = ys.iter().map(|i1| -i1 * i1).collect();
                 let minus_xy: Vec<f32> = xs.iter().zip(&ys).map(|(i1, i2)| -i1 * i2).collect();
                 stack![
-                    Axis(0),
+                    Axis(1),
                     stack![
-                        Axis(0),
+                        Axis(1),
                         xs,
                         zeros,
                         ys,
@@ -226,7 +232,7 @@ where
                         minus_xy
                     ],
                     stack![
-                        Axis(0),
+                        Axis(1),
                         zeros,
                         xs,
                         zeros,
@@ -237,35 +243,32 @@ where
                         minus_yy
                     ]
                 ]
-                .permuted_axes([2, 0, 1])
-            }; // (Nx2x8)
+            }; // (HWx2xN)
 
             let grad_im2 = stack![
                 Axis(2),
-                dx.into_shape((num_points, 1))?,
-                dy.into_shape((num_points, 1))?
-            ]; // (Nx1x2)
+                dx.into_shape((num_points, c))?,
+                dy.into_shape((num_points, c))?
+            ]; // (HWxCx2)
 
             // Perform the batch matrix multiply of grad_im2 @ jacobian_p
             par_azip!(
                 (
-                    mut v in steepest_descent_ic_t.axis_iter_mut(Axis(0)),
+                    mut v in steepest_descent_ic.axis_iter_mut(Axis(0)),
                     a in grad_im2.axis_iter(Axis(0)),
                     b in jacobian_p.axis_iter(Axis(0))
                 )
-                {v.assign(&a.dot(&b).into_shape(params.len()).unwrap())}
+                {v.assign(&a.dot(&b))}
             );
 
-            let hessian_inv = (steepest_descent_ic_t.clone().permuted_axes([1, 0]))
-                .dot(&steepest_descent_ic_t)
-                .inv()
-                .unwrap();
+            let hessian: Array2<f32> = steepest_descent_ic
+                .axis_iter(Axis(0))
+                .map(|cn| cn.t().dot(&cn))
+                .fold(Array2::<f32>::zeros((num_params, num_params)), |a, b| a + b);
+            let hessian_inv = hessian.inv().unwrap();
 
-            // (Nx8x1)              (8x8)
-            (
-                steepest_descent_ic_t.slice(s![.., .., NewAxis]).to_owned(),
-                hessian_inv,
-            )
+            // (HWxNxC)            (8x8)
+            (steepest_descent_ic.permuted_axes([0, 2, 1]), hessian_inv)
         }
         _ => {
             return Err(anyhow!(
@@ -298,32 +301,29 @@ where
         );
 
         // Calculate parameter update dp
-        let dp: Array2<f32> = hessian_inv.dot(
-            &(
-                steepest_descent_ic_t.axis_iter(Axis(0)),
-                warped_im1gray_pixels.axis_iter(Axis(0)),
-                img2_pixels.axis_iter(Axis(0)),
-                valid.as_slice().unwrap().par_iter(),
-            )
-                // Zip together all three iterators and valid flag
-                .into_par_iter()
-                // Drop them if the warped value from is out-of-bounds
-                // Calculate parameter update according to formula
-                .filter_map(|(sd, p1, p2, &is_valid)| {
-                    if is_valid {
-                        let weight = if has_weights { p1[c] } else { 1.0 };
-                        Some(
-                            sd.to_owned()
-                                * (p1.slice(s![..c]).to_owned() - p2.to_owned()).sum()
-                                * weight,
-                        )
-                    } else {
-                        None
-                    }
-                })
-                // Sum them together, here we use reduce with a base value of zero
-                .reduce(|| Array2::<f32>::zeros((num_params, 1)), |a, b| a + b),
-        );
+        let sd_param_updates = (
+            steepest_descent_ic_t.axis_iter(Axis(0)),
+            warped_im1gray_pixels.axis_iter(Axis(0)),
+            img2_pixels.axis_iter(Axis(0)),
+            valid.as_slice().unwrap().par_iter(),
+        )
+            // Zip together all three iterators and valid flag
+            .into_par_iter()
+            // Drop them if the warped value from is out-of-bounds
+            // Calculate parameter update according to formula
+            .filter_map(|(sd, p1, p2, &is_valid)| {
+                if is_valid {
+                    let weight = if has_weights { p1[c] } else { 1.0 };
+                    let diff = p1.slice(s![..c]).to_owned() - p2.to_owned();
+                    // println!("sd {:?}, diff {:?}", sd.dim(), diff.dim());
+                    Some(sd.dot(&diff.slice(s![.., NewAxis])) * weight)
+                } else {
+                    None
+                }
+            })
+            // Sum them together, here we use reduce with a base value of zero
+            .reduce(|| Array2::<f32>::zeros((num_params, 1)), |a, b| a + b);
+        let dp: Array2<f32> = hessian_inv.dot(&sd_param_updates);
         let mapping_dp = Mapping::from_params(dp.clone().into_raw_vec());
 
         // Update the parameters
@@ -402,7 +402,7 @@ where
         let params_history;
         let msg = format!("Matching scale 1/{:}", &current_scale);
         let msg = if message { Some(msg) } else { None };
-        (mapping, params_history) = iclk_grayscale(
+        (mapping, params_history) = iclk_multichannel(
             im1,
             im2,
             gradients(im2),
@@ -445,7 +445,7 @@ pub fn pairwise_iclk(
         .zip(init_mappings)
         .map(|(window, init_mapping)| {
             pbar.inc(1);
-            iclk_grayscale(
+            iclk_multichannel(
                 &window[0],
                 &window[1],
                 gradients(&window[1]),

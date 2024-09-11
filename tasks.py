@@ -8,16 +8,16 @@ from invoke import task
 from spano import Mapping
 
 
-@task(iterable=["path"])
-def plot(_, path, normalize=False):
-    fig, axes = plt.subplots(nrows=1, ncols=len(path), sharey=True, squeeze=False)
+@task(iterable=["in_file"])
+def plot(_, in_file, normalize=False):
+    _, axes = plt.subplots(nrows=1, ncols=len(in_file), sharey=True, squeeze=False)
 
-    if len(path) > 1 and normalize:
+    if len(in_file) > 1 and normalize:
         print(
             "WARNING: Normalizing each DOF independently, no direct comparison should be done between plots."
         )
 
-    for p, ax in zip(path, axes.flatten()):
+    for p, ax in zip(in_file, axes.flatten()):
         ax.set_title(Path(p).name)
 
         with open(p, "r") as f:

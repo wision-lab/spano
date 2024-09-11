@@ -35,7 +35,7 @@ spano lk -i assets/madison1.png -i assets/madison2.png -o out.png --downscale=2 
 spano lk -i assets/madison1.png -i assets/madison2.png -o out-multi.png --downscale=2 --iterations=5000 --early-stop=5e-3 --viz-output=out-multi.mp4 --params-path=params-multi.json --multi
 
 # Plot convergence of the two runs
-inv plot --path params.json --path params-multi.json
+inv plot -i params.json -i params-multi.json
 
 # Here's a harder example with different sized images and a large warp (takes ~6.4 seconds):
 spano lk -i assets/skyline1.png -i assets/skyline2.png -o out-multi.png --downscale=2 --iterations=5000 --early-stop=1e-3 --multi

@@ -1364,6 +1364,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ndarray-ndimage"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e25f143f76f451ed1c8171c9fb87f0edf4942984d5782b0fb2657bff9fd2fe8"
+dependencies = [
+ "ndarray",
+ "ndarray-stats",
+ "num-traits",
+]
+
+[[package]]
 name = "ndarray-npy"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2329,6 +2340,7 @@ dependencies = [
  "ndarray",
  "ndarray-interp",
  "ndarray-linalg",
+ "ndarray-ndimage",
  "num-traits",
  "numpy",
  "photoncube2video",

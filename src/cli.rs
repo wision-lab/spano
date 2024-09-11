@@ -64,7 +64,7 @@ pub struct LKArgs {
     #[arg(long, default_value_t = false)]
     pub multi: bool,
 
-    /// Downscale images before optimaization
+    /// Downscale images before optimization
     #[arg(long, default_value_t = 1.0)]
     pub downscale: f32,
 
@@ -95,6 +95,10 @@ pub struct LKArgs {
     /// Path of optional reference image weights (can be used as mask too, white areas are kept as valid, black is ignored)
     #[arg(long)]
     pub weights: Option<String>,
+
+    /// If enabled, convert images to grayscale then perform matching
+    #[arg(long, default_value_t = false)]
+    pub grayscale: bool,
 }
 
 #[derive(Args, Debug, Clone)]
