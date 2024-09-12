@@ -8,7 +8,7 @@ use image::{
 };
 use imageproc::{
     definitions::{Clamp, Image},
-    gradients::{HORIZONTAL_SCHARR, VERTICAL_SCHARR},
+    gradients::{HORIZONTAL_PREWITT, VERTICAL_PREWITT},
 };
 use itertools::izip;
 use ndarray::{
@@ -24,26 +24,21 @@ use crate::{
     warps::{Mapping, TransformationType},
 };
 
-/// Compute image gradients using Scharr operator
+/// Compute image gradients using Prewitt operator
 /// Returned (dx, dy) pair as HxWxC arrays.
-pub fn gradients<P>(img: &Image<P>) -> (Array3<f32>, Array3<f32>)
-where
-    P: Pixel + Send + Sync,
-    f32: From<<P as Pixel>::Subpixel>,
-{
-    let arr = ref_image_to_array3(img).to_owned().mapv(|v| f32::from(v));
+pub fn gradients(arr: &Array3<f32>) -> (Array3<f32>, Array3<f32>) {
     let dx = correlate(
-        &arr,
-        &Array3::from_shape_vec((3, 3, 1), HORIZONTAL_SCHARR.to_vec())
-            .expect("Scharr filter should contain 9 elements.")
+        arr,
+        &Array3::from_shape_vec((3, 3, 1), HORIZONTAL_PREWITT.to_vec())
+            .expect("Filter should contain 9 elements.")
             .mapv(|v| v as f32),
         BorderMode::Reflect,
         0,
     );
     let dy = correlate(
-        &arr,
-        &Array3::from_shape_vec((3, 3, 1), VERTICAL_SCHARR.to_vec())
-            .expect("Scharr filter should contain 9 elements.")
+        arr,
+        &Array3::from_shape_vec((3, 3, 1), VERTICAL_PREWITT.to_vec())
+            .expect("Filter should contain 9 elements.")
             .mapv(|v| v as f32),
         BorderMode::Reflect,
         0,
@@ -70,14 +65,20 @@ where
     <P as Pixel>::Subpixel: ValueInto<f32> + From<u8> + Clamp<f32>,
     f32: ValueFrom<<P as Pixel>::Subpixel> + From<<P as Pixel>::Subpixel>,
 {
-    let (dx, dy) = gradients(im2);
+    let img1_array = ref_image_to_array3(im1).mapv(f32::from).to_owned();
+    let img2_array = ref_image_to_array3(im2).mapv(f32::from).to_owned();
+    let (dx, dy) = gradients(&img2_array);
+    let weights = im1_weights.map(|w| {
+        ref_image_to_array3::<Luma<u8>>(w)
+            .mapv(|v| v as f32 / 255.0).to_owned()
+    });
 
     iclk_multichannel(
-        &im1,
-        &im2,
+        img1_array,
+        img2_array,
         (dx, dy),
         init_mapping,
-        im1_weights,
+        weights,
         max_iters,
         stop_early,
         patience,
@@ -85,7 +86,7 @@ where
     )
 }
 
-/// Main iclk routine, only works for grayscale images
+/// Main iclk routine, which works for an arbitrary number of channels. 
 /// This returns the mapping that warps image 2 onto image 1's reference frame.
 /// The param history however, corresponds to the inverse mappings, i.e from 1 to 2.
 ///
@@ -97,56 +98,43 @@ where
 ///     the im2 gradients need to have the same size as im2 and im1 weights should match im1.
 ///
 /// See: https://www.ri.cmu.edu/pub_files/pub3/baker_simon_2002_3/baker_simon_2002_3.pdf
-///
-/// TODO: Is anything actually enforcing this to be grayscale/single-channel?
 #[allow(clippy::too_many_arguments)]
-pub fn iclk_multichannel<P>(
-    im1: &Image<P>,
-    im2: &Image<P>,
+pub fn iclk_multichannel(
+    img1_array: Array3<f32>,
+    img2_array: Array3<f32>,
     im2_grad: (Array3<f32>, Array3<f32>),
     init_mapping: Mapping,
-    im1_weights: Option<&GrayImage>,
+    im1_weights: Option<Array3<f32>>,
     max_iters: Option<i32>,
     stop_early: Option<f32>,
     patience: Option<usize>,
     message: Option<&str>,
-) -> Result<(Mapping, Vec<Vec<f32>>)>
-where
-    P: Pixel + Send + Sync + 'static,
-    f32: ValueFrom<<P as Pixel>::Subpixel> + From<<P as Pixel>::Subpixel>,
-{
+) -> Result<(Mapping, Vec<Vec<f32>>)> {
     // Initialize values
     let mut params = init_mapping.inverse().get_params();
-    let num_params = params.len();
-    let h = im2.height() as usize;
-    let w = im2.width() as usize;
-    let c = P::CHANNEL_COUNT as usize;
+    let (h, w, c) = img2_array.dim();
     let num_points = w * h;
+    let num_params = params.len();
+
     let points = Array::from_shape_fn((num_points, 2), |(i, j)| if j == 0 { i % w } else { i / w });
     let xs = points.column(0).mapv(|v| v as f32);
     let ys = points.column(1).mapv(|v| v as f32);
 
     let (img1_array, has_weights) = if let Some(weights) = im1_weights {
         // Concatenate weights as last channel of img1_array if has_weights
-        let mut img1_array = ref_image_to_array3(im1).mapv(|v| f32::from(v));
-        img1_array = concatenate(
+        let img1_array = concatenate(
             Axis(2),
             &[
                 img1_array.view(),
-                ref_image_to_array3::<Luma<u8>>(weights)
-                    .mapv(|v| v as f32 / 255.0)
-                    .view(),
+                weights.view(),
             ],
         )?;
         (img1_array.as_standard_layout().to_owned(), true)
     } else {
-        (ref_image_to_array3(im1).mapv(|v| f32::from(v)), false)
+        (img1_array, false)
     };
     let mut warped_im1gray_pixels = Array2::<f32>::zeros((num_points, c + has_weights as usize));
-
-    let img2_pixels = ref_image_to_array3(im2)
-        .mapv(|v| f32::from(v))
-        .into_shape((num_points, c))?;
+    let img2_pixels = img2_array.into_shape((num_points, c))?;
     let mut valid = Array1::<bool>::from_elem(num_points, false);
 
     // These can be cached, so we init them before the main loop
@@ -402,12 +390,19 @@ where
         let params_history;
         let msg = format!("Matching scale 1/{:}", &current_scale);
         let msg = if message { Some(msg) } else { None };
+        let img1_array = ref_image_to_array3(im1).mapv(f32::from).to_owned();
+        let img2_array = ref_image_to_array3(im2).mapv(f32::from).to_owned();
+        let grads = gradients(&img2_array);
+        let weights = weights.as_ref().map(|w| {
+            ref_image_to_array3::<Luma<u8>>(w)
+                .mapv(|v| v as f32 / 255.0).to_owned()
+        });
         (mapping, params_history) = iclk_multichannel(
-            im1,
-            im2,
-            gradients(im2),
+            img1_array,
+            img2_array,
+            grads,
             mapping,
-            weights.as_ref(),
+            weights,
             max_iters,
             stop_early,
             patience,
@@ -445,10 +440,13 @@ pub fn pairwise_iclk(
         .zip(init_mappings)
         .map(|(window, init_mapping)| {
             pbar.inc(1);
+            let img1_array = ref_image_to_array3(&window[0]).mapv(f32::from).to_owned();
+            let img2_array = ref_image_to_array3(&window[1]).mapv(f32::from).to_owned();
+            let grads = gradients(&img2_array);
             iclk_multichannel(
-                &window[0],
-                &window[1],
-                gradients(&window[1]),
+                img1_array,
+                img2_array,
+                grads,
                 init_mapping.clone(),
                 None,
                 Some(iterations),

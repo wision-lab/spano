@@ -77,6 +77,11 @@ cargo +nightly udeps
 cargo machete --with-metadata
 ```
 
+Finally, we use clippy:
+```shell
+cargo clippy --no-deps
+```
+
 
 ## Benchmarking
 
