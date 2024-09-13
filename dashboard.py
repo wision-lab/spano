@@ -14,74 +14,74 @@ from natsort import natsorted
 
 # Override the original `image_comparison` to include a vertical arg.
 def image_comparison(
-	img1: Union[Image.Image, str, np.ndarray],
-	img2: Union[Image.Image, str, np.ndarray],
-	label1: str = "1",
-	label2: str = "2",
-	width: int = 704,
-	show_labels: bool = True,
-	starting_position: int = 50,
-	make_responsive: bool = True,
-	in_memory: bool = False,
-    vertical: bool = False
+    img1: Union[Image.Image, str, np.ndarray],
+    img2: Union[Image.Image, str, np.ndarray],
+    label1: str = "1",
+    label2: str = "2",
+    width: int = 704,
+    show_labels: bool = True,
+    starting_position: int = 50,
+    make_responsive: bool = True,
+    in_memory: bool = False,
+    vertical: bool = False,
 ) -> components.html:
-	"""
-	Create a comparison slider for two images.
-	
-	Parameters
-	----------
-	img1: str, PIL Image, or numpy array
-		Data for the first image.
-	img2: str, PIL Image, or numpy array
-		Data for the second image.
-	label1: str, optional
-		Label for the first image. Default is "1".
-	label2: str, optional
-		Label for the second image. Default is "2".
-	width: int, optional
-		Width of the component in pixels. Default is 704.
-	show_labels: bool, optional
-		Whether to show labels on the images. Default is True.
-	starting_position: int, optional
-		Starting position of the slider as a percentage (0-100). Default is 50.
-	make_responsive: bool, optional
-		Whether to enable responsive mode. Default is True.
-	in_memory: bool, optional
-		Whether to handle pillow to base64 conversion in memory without saving to local. Default is False.
+    """
+    Create a comparison slider for two images.
 
-	Returns
-	-------
-	components.html
-		Returns a static component with a timeline
-	"""
-	# Prepare images
-	img1_pillow = read_image_as_pil(img1)
-	img2_pillow = read_image_as_pil(img2)
+    Parameters
+    ----------
+    img1: str, PIL Image, or numpy array
+            Data for the first image.
+    img2: str, PIL Image, or numpy array
+            Data for the second image.
+    label1: str, optional
+            Label for the first image. Default is "1".
+    label2: str, optional
+            Label for the second image. Default is "2".
+    width: int, optional
+            Width of the component in pixels. Default is 704.
+    show_labels: bool, optional
+            Whether to show labels on the images. Default is True.
+    starting_position: int, optional
+            Starting position of the slider as a percentage (0-100). Default is 50.
+    make_responsive: bool, optional
+            Whether to enable responsive mode. Default is True.
+    in_memory: bool, optional
+            Whether to handle pillow to base64 conversion in memory without saving to local. Default is False.
 
-	img_width, img_height = img1_pillow.size
-	h_to_w = img_height / img_width
-	height = int((width * h_to_w) * 0.95)
+    Returns
+    -------
+    components.html
+            Returns a static component with a timeline
+    """
+    # Prepare images
+    img1_pillow = read_image_as_pil(img1)
+    img2_pillow = read_image_as_pil(img2)
 
-	if in_memory:
-		# Convert images to base64 strings
-		img1 = pillow_to_base64(img1_pillow)
-		img2 = pillow_to_base64(img2_pillow)
-	else:
-		# Create base64 strings from temporary files
-		os.makedirs(TEMP_DIR, exist_ok=True)
-		for file_ in os.listdir(TEMP_DIR):
-			if file_.endswith(".jpg"):
-				os.remove(os.path.join(TEMP_DIR, file_))
-		img1 = pillow_local_file_to_base64(img1_pillow, TEMP_DIR)
-		img2 = pillow_local_file_to_base64(img2_pillow, TEMP_DIR)
+    img_width, img_height = img1_pillow.size
+    h_to_w = img_height / img_width
+    height = int((width * h_to_w) * 0.95)
 
-	# Load CSS and JS
-	cdn_path = "https://cdn.knightlab.com/libs/juxtapose/latest"
-	css_block = f'<link rel="stylesheet" href="{cdn_path}/css/juxtapose.css">'
-	js_block = f'<script src="{cdn_path}/js/juxtapose.min.js"></script>'
+    if in_memory:
+        # Convert images to base64 strings
+        img1 = pillow_to_base64(img1_pillow)
+        img2 = pillow_to_base64(img2_pillow)
+    else:
+        # Create base64 strings from temporary files
+        os.makedirs(TEMP_DIR, exist_ok=True)
+        for file_ in os.listdir(TEMP_DIR):
+            if file_.endswith(".jpg"):
+                os.remove(os.path.join(TEMP_DIR, file_))
+        img1 = pillow_local_file_to_base64(img1_pillow, TEMP_DIR)
+        img2 = pillow_local_file_to_base64(img2_pillow, TEMP_DIR)
 
-	# write html block
-	htmlcode = f"""
+    # Load CSS and JS
+    cdn_path = "https://cdn.knightlab.com/libs/juxtapose/latest"
+    css_block = f'<link rel="stylesheet" href="{cdn_path}/css/juxtapose.css">'
+    js_block = f'<script src="{cdn_path}/js/juxtapose.min.js"></script>'
+
+    # write html block
+    htmlcode = f"""
 		<style>body {{ margin: unset; }}</style>
 		{css_block}
 		{js_block}
@@ -108,9 +108,9 @@ def image_comparison(
 			}});
 		</script>
 		"""
-	static_component = components.html(htmlcode, height=height, width=width)
+    static_component = components.html(htmlcode, height=height, width=width)
 
-	return static_component
+    return static_component
 
 
 def show_video(path, subheader=None, **kwargs):
@@ -137,7 +137,7 @@ def main(root):
             key=os.path.getmtime,
             reverse=True,
         )
-        
+
         if filter_incomplete:
             latest = [i for i in latest if (Path(i) / "panorama.png").exists()]
 
@@ -146,10 +146,12 @@ def main(root):
             for i in Path(root).glob("samples/*")
             if i.is_dir() and not i.stem.startswith(".")
         )
-        short_names = {str(Path(i).name.replace("spano_", "")): i for i in samples + latest}
+        short_names = {
+            str(Path(i).name.replace("spano_", "")): i for i in samples + latest
+        }
         short_name = st.selectbox("Select Sequence:", short_names.keys())
         sequence = Path(short_names[short_name])
-        
+
         if st.button("Trash"):
             Path(sequence.parent / "trash").mkdir(exist_ok=True)
             sequence.rename(sequence.parent / "trash" / sequence.name)
@@ -181,7 +183,7 @@ def main(root):
 
     with st.expander("**Stabilized Video**", expanded=False):
         lvls = natsorted(sequence.glob("lvl-*.mp4"), reverse=True)
-        tabs = st.tabs([f"   Level #{i+1}   " for i in range(len(lvls)-1, -1, -1)])
+        tabs = st.tabs([f"   Level #{i+1}   " for i in range(len(lvls) - 1, -1, -1)])
         for tab, video in zip(tabs, lvls):
             with tab:
                 show_video(video, loop=True, autoplay=True)
@@ -211,8 +213,9 @@ def main(root):
                     img2=str(pano_path),
                     label1="Baseline Panorama",
                     label2="Our Reconstruction",
-                    vertical=st.toggle("Vertical Compare")
+                    vertical=st.toggle("Vertical Compare"),
                 )
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

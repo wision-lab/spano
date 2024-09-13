@@ -4,11 +4,12 @@ use image::{
     io::Reader as ImageReader,
 };
 use ndarray::{array, Array3};
+use photoncube2video::transforms::image_to_array3;
 #[cfg(target_os = "linux")]
 use pprof::criterion::{Output, PProfProfiler};
 use spano::{
     blend::{distance_transform, merge_images},
-    lk::iclk,
+    lk::{iclk, img_pyramid},
     warps::{Mapping, TransformationType},
 };
 
@@ -116,6 +117,21 @@ pub fn benchmark_merge_images(c: &mut Criterion) {
     });
 }
 
+pub fn benchmark_img_pyramid(c: &mut Criterion) {
+    let img = ImageReader::open("tests/source.png")
+        .unwrap()
+        .decode()
+        .unwrap()
+        .into_rgb8();
+    let arr = image_to_array3(img).mapv(|v| v as f32);
+
+    c.bench_function("img_pyramid", |b| {
+        b.iter(|| {
+            let _out = img_pyramid(&arr, (5, 5), 10);
+        })
+    });
+}
+
 #[cfg(target_os = "linux")]
 criterion_group! {
     name = benches;
@@ -127,7 +143,8 @@ criterion_group! {
         benchmark_warp_array3,
         benchmark_distance_transform,
         benchmark_iclk,
-        benchmark_merge_images
+        benchmark_merge_images,
+        benchmark_img_pyramid
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -136,7 +153,8 @@ criterion_group! {
     benchmark_warp_array3,
     benchmark_distance_transform,
     benchmark_iclk,
-    benchmark_merge_images
+    benchmark_merge_images,
+    benchmark_img_pyramid
 }
 
 criterion_main!(benches);

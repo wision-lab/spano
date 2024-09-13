@@ -1,7 +1,19 @@
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Dict, Optional
 from typing_extensions import Self
+from enum import Enum, auto
 
 import numpy as np
+
+class TransformationType(Enum):
+    Unknown = auto()
+    Identity = auto()
+    Translational = auto()
+    Affine = auto()
+    Projective = auto()
+
+    def num_params(self: Self) -> int: ...
+    def to_str(self: Self) -> str: ...
+    def from_str(name: str) -> Self: ...
 
 class Mapping:
     mat: np.ndarray
@@ -52,3 +64,29 @@ class Mapping:
         out_size: Tuple[int, int],
         background: Optional[List[float]],
     ) -> Tuple[np.ndarray, np.ndarray]: ...
+
+def iclk(
+    img1_array: np.ndarray,
+    img2_array: np.ndarray,
+    init_mapping: Optional[Mapping] = None,
+    im1_weights: Optional[np.ndarray] = None,
+    max_iters: Optional[int] = 250,
+    stop_early: Optional[float] = 1e-3,
+    patience: Optional[int] = 10,
+    message: Optional[str] = None,
+) -> Tuple[Mapping, List[List[float]]]: ...
+def hierarchical_iclk(
+    im1: np.ndarray,
+    im2: np.ndarray,
+    init_mapping: Optional[Mapping] = None,
+    im1_weights: Optional[np.ndarray] = None,
+    max_iters: Optional[int] = 250,
+    min_dimension: int = 16,
+    max_levels: int = 8,
+    stop_early: Optional[float] = 1e-3,
+    patience: Optional[int] = 10,
+    message: bool = False,
+) -> Tuple[Mapping, Dict[int, List[List[float]]]]: ...
+def img_pyramid(
+    im: np.ndarray, min_dimension: int = 16, max_levels: int = 8
+) -> Tuple[np.ndarray, ...]: ...

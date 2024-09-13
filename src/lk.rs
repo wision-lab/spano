@@ -2,10 +2,7 @@ use std::collections::{HashMap, VecDeque};
 
 use anyhow::{anyhow, Result};
 use conv::{ValueFrom, ValueInto};
-use image::{
-    imageops::{colorops::grayscale, resize, FilterType},
-    GrayImage, Luma, Pixel,
-};
+use image::{GrayImage, Luma, Pixel};
 use imageproc::{
     definitions::{Clamp, Image},
     gradients::{HORIZONTAL_PREWITT, VERTICAL_PREWITT},
@@ -16,7 +13,9 @@ use ndarray::{
 };
 use ndarray_linalg::solve::Inverse;
 use ndarray_ndimage::{correlate, BorderMode};
+use numpy::{PyArray3, PyArrayMethods, ToPyArray};
 use photoncube2video::transforms::ref_image_to_array3;
+use pyo3::prelude::*;
 use rayon::prelude::*;
 
 use crate::{
@@ -48,15 +47,16 @@ pub fn gradients(arr: &Array3<f32>) -> (Array3<f32>, Array3<f32>) {
 
 /// Estimate the warp that maps `img2` to `img1` using the Inverse Compositional Lucas-Kanade algorithm.
 /// In other words, img2 is the template and img1 is the static image.
+/// See `iclk_py` for more details.
 #[allow(clippy::too_many_arguments)]
 pub fn iclk<P>(
     im1: &Image<P>,
     im2: &Image<P>,
     init_mapping: Mapping,
     im1_weights: Option<&GrayImage>,
-    max_iters: Option<i32>,
+    max_iters: Option<u32>,
     stop_early: Option<f32>,
-    patience: Option<usize>,
+    patience: Option<u32>,
     message: Option<&str>,
 ) -> Result<(Mapping, Vec<Vec<f32>>)>
 where
@@ -70,15 +70,16 @@ where
     let (dx, dy) = gradients(&img2_array);
     let weights = im1_weights.map(|w| {
         ref_image_to_array3::<Luma<u8>>(w)
-            .mapv(|v| v as f32 / 255.0).to_owned()
+            .mapv(|v| v as f32 / 255.0)
+            .to_owned()
     });
 
-    iclk_multichannel(
-        img1_array,
-        img2_array,
-        (dx, dy),
+    iclk_array(
+        &img1_array,
+        &img2_array,
+        (&dx, &dy),
         init_mapping,
-        weights,
+        weights.as_ref(),
         max_iters,
         stop_early,
         patience,
@@ -86,33 +87,22 @@ where
     )
 }
 
-/// Main iclk routine, which works for an arbitrary number of channels. 
-/// This returns the mapping that warps image 2 onto image 1's reference frame.
-/// The param history however, corresponds to the inverse mappings, i.e from 1 to 2.
-///
-/// Weights can be specified for image 1. They are concatenated to the reference image and
-/// warped together. The warped weights then affect that pixel's loss and is effectively
-/// discarded from the optimization step if it's zero.
-///
-/// Note: No input validation is performed here, im1 and im2 can have different sizes but
-///     the im2 gradients need to have the same size as im2 and im1 weights should match im1.
-///
-/// See: https://www.ri.cmu.edu/pub_files/pub3/baker_simon_2002_3/baker_simon_2002_3.pdf
+/// See `iclk_py` for more.
 #[allow(clippy::too_many_arguments)]
-pub fn iclk_multichannel(
-    img1_array: Array3<f32>,
-    img2_array: Array3<f32>,
-    im2_grad: (Array3<f32>, Array3<f32>),
+pub fn iclk_array(
+    im1: &Array3<f32>,
+    im2: &Array3<f32>,
+    im2_grad: (&Array3<f32>, &Array3<f32>),
     init_mapping: Mapping,
-    im1_weights: Option<Array3<f32>>,
-    max_iters: Option<i32>,
+    im1_weights: Option<&Array3<f32>>,
+    max_iters: Option<u32>,
     stop_early: Option<f32>,
-    patience: Option<usize>,
+    patience: Option<u32>,
     message: Option<&str>,
 ) -> Result<(Mapping, Vec<Vec<f32>>)> {
     // Initialize values
     let mut params = init_mapping.inverse().get_params();
-    let (h, w, c) = img2_array.dim();
+    let (h, w, c) = im2.dim();
     let num_points = w * h;
     let num_params = params.len();
 
@@ -122,19 +112,13 @@ pub fn iclk_multichannel(
 
     let (img1_array, has_weights) = if let Some(weights) = im1_weights {
         // Concatenate weights as last channel of img1_array if has_weights
-        let img1_array = concatenate(
-            Axis(2),
-            &[
-                img1_array.view(),
-                weights.view(),
-            ],
-        )?;
-        (img1_array.as_standard_layout().to_owned(), true)
+        let img1_array = concatenate(Axis(2), &[im1.view(), weights.view()])?;
+        (&img1_array.as_standard_layout().to_owned(), true)
     } else {
-        (img1_array, false)
+        (im1, false)
     };
     let mut warped_im1gray_pixels = Array2::<f32>::zeros((num_points, c + has_weights as usize));
-    let img2_pixels = img2_array.into_shape((num_points, c))?;
+    let img2_pixels = im2.view().into_shape((num_points, c))?;
     let mut valid = Array1::<bool>::from_elem(num_points, false);
 
     // These can be cached, so we init them before the main loop
@@ -144,8 +128,8 @@ pub fn iclk_multichannel(
         TransformationType::Translational => {
             let steepest_descent_ic = stack![
                 Axis(2),
-                dx.into_shape((num_points, c))?,
-                dy.into_shape((num_points, c))?
+                dx.view().into_shape((num_points, c))?,
+                dy.view().into_shape((num_points, c))?
             ]; // (HWxCxN)
 
             let hessian: Array2<f32> = steepest_descent_ic
@@ -172,8 +156,8 @@ pub fn iclk_multichannel(
 
             let grad_im2 = stack![
                 Axis(2),
-                dx.into_shape((num_points, c))?,
-                dy.into_shape((num_points, c))?
+                dx.view().into_shape((num_points, c))?,
+                dy.view().into_shape((num_points, c))?
             ]; // (HWxCx2)
 
             // Perform the batch matrix multiply of grad_im2 @ jacobian_p
@@ -235,8 +219,8 @@ pub fn iclk_multichannel(
 
             let grad_im2 = stack![
                 Axis(2),
-                dx.into_shape((num_points, c))?,
-                dy.into_shape((num_points, c))?
+                dx.view().into_shape((num_points, c))?,
+                dy.view().into_shape((num_points, c))?
             ]; // (HWxCx2)
 
             // Perform the batch matrix multiply of grad_im2 @ jacobian_p
@@ -270,7 +254,7 @@ pub fn iclk_multichannel(
     let pbar = get_pbar(max_iters.unwrap_or(250) as usize, message);
     let mut params_history = vec![];
     params_history.push(params.clone());
-    let mut dps: VecDeque<Array2<f32>> = VecDeque::with_capacity(patience.unwrap_or(10));
+    let mut dps: VecDeque<Array2<f32>> = VecDeque::with_capacity(patience.unwrap_or(10) as usize);
 
     // Main optimization loop
     for i in 0..max_iters.unwrap_or(250) {
@@ -320,7 +304,7 @@ pub fn iclk_multichannel(
         params_history.push(params.clone());
 
         // Push back dp update, pop old one if deque is full
-        if i >= patience.unwrap_or(10) as i32 {
+        if i >= patience.unwrap_or(10) {
             dps.pop_front();
         }
         dps.push_back(dp.clone());
@@ -339,6 +323,10 @@ pub fn iclk_multichannel(
     Ok((Mapping::from_params(params).inverse(), params_history))
 }
 
+/// Estimate the warp that maps `img2` to `img1` using the Pyramidal (or multi-level)
+/// Inverse Compositional Lucas-Kanade algorithm. This is akin to calling `iclk` on each level
+/// of `img_pyramid`.
+/// See `hierarchical_iclk_py` for more details.
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
 pub fn hierarchical_iclk<P>(
@@ -346,11 +334,11 @@ pub fn hierarchical_iclk<P>(
     im2: &Image<P>,
     init_mapping: Mapping,
     im1_weights: Option<&GrayImage>,
-    max_iters: Option<i32>,
-    min_dimensions: (u32, u32),
+    max_iters: Option<u32>,
+    min_dimensions: (usize, usize),
     max_levels: u32,
     stop_early: Option<f32>,
-    patience: Option<usize>,
+    patience: Option<u32>,
     message: bool,
 ) -> Result<(Mapping, HashMap<u32, Vec<Vec<f32>>>)>
 where
@@ -359,18 +347,52 @@ where
     <P as Pixel>::Subpixel: ValueInto<f32> + From<u8> + Clamp<f32>,
     f32: ValueFrom<<P as Pixel>::Subpixel> + From<<P as Pixel>::Subpixel>,
 {
-    let im1_gray = grayscale(im1);
-    let im2_gray = grayscale(im2);
+    let im1 = ref_image_to_array3(im1).mapv(f32::from).to_owned();
+    let im2 = ref_image_to_array3(im2).mapv(f32::from).to_owned();
+    let weights = im1_weights.as_ref().map(|w| {
+        ref_image_to_array3::<Luma<u8>>(w)
+            .mapv(|v| v as f32 / 255.0)
+            .to_owned()
+    });
 
-    let stack_im1 = img_pyramid(&im1_gray, min_dimensions, max_levels);
-    let stack_im2 = img_pyramid(&im2_gray, min_dimensions, max_levels);
+    hierarchical_iclk_array(
+        &im1,
+        &im2,
+        init_mapping,
+        weights.as_ref(),
+        max_iters,
+        min_dimensions,
+        max_levels,
+        stop_early,
+        patience,
+        message,
+    )
+}
+
+/// See `hierarchical_iclk_array_py` for more details.
+#[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
+pub fn hierarchical_iclk_array(
+    im1: &Array3<f32>,
+    im2: &Array3<f32>,
+    init_mapping: Mapping,
+    im1_weights: Option<&Array3<f32>>,
+    max_iters: Option<u32>,
+    min_dimensions: (usize, usize),
+    max_levels: u32,
+    stop_early: Option<f32>,
+    patience: Option<u32>,
+    message: bool,
+) -> Result<(Mapping, HashMap<u32, Vec<Vec<f32>>>)> {
+    let stack_im1 = img_pyramid(&im1, min_dimensions, max_levels);
+    let stack_im2 = img_pyramid(&im2, min_dimensions, max_levels);
 
     let num_lvls = stack_im1.len().min(stack_im2.len());
     let mut mapping = init_mapping;
     let mut all_params_history = HashMap::new();
 
     let stack_weights = im1_weights.map_or(vec![None; num_lvls], |weights| {
-        img_pyramid(weights, min_dimensions, max_levels)
+        img_pyramid(&weights, min_dimensions, max_levels)
             .into_iter()
             .map(Some)
             .collect()
@@ -390,19 +412,14 @@ where
         let params_history;
         let msg = format!("Matching scale 1/{:}", &current_scale);
         let msg = if message { Some(msg) } else { None };
-        let img1_array = ref_image_to_array3(im1).mapv(f32::from).to_owned();
-        let img2_array = ref_image_to_array3(im2).mapv(f32::from).to_owned();
-        let grads = gradients(&img2_array);
-        let weights = weights.as_ref().map(|w| {
-            ref_image_to_array3::<Luma<u8>>(w)
-                .mapv(|v| v as f32 / 255.0).to_owned()
-        });
-        (mapping, params_history) = iclk_multichannel(
-            img1_array,
-            img2_array,
-            grads,
+        let (dx, dy) = gradients(im2);
+
+        (mapping, params_history) = iclk_array(
+            im1,
+            im2,
+            (&dx, &dy),
             mapping,
-            weights,
+            weights.as_ref(),
             max_iters,
             stop_early,
             patience,
@@ -427,9 +444,9 @@ where
 pub fn pairwise_iclk(
     frames: &Vec<GrayImage>,
     init_mappings: &[Mapping],
-    iterations: i32,
+    iterations: u32,
     early_stop: f32,
-    patience: usize,
+    patience: u32,
     message: Option<&str>,
 ) -> Result<Vec<Mapping>> {
     let pbar = get_pbar(frames.len() - 1, message);
@@ -442,11 +459,12 @@ pub fn pairwise_iclk(
             pbar.inc(1);
             let img1_array = ref_image_to_array3(&window[0]).mapv(f32::from).to_owned();
             let img2_array = ref_image_to_array3(&window[1]).mapv(f32::from).to_owned();
-            let grads = gradients(&img2_array);
-            iclk_multichannel(
-                img1_array,
-                img2_array,
-                grads,
+            let (dx, dy) = gradients(&img2_array);
+
+            iclk_array(
+                &img1_array,
+                &img2_array,
+                (&dx, &dy),
                 init_mapping.clone(),
                 None,
                 Some(iterations),
@@ -467,23 +485,132 @@ pub fn pairwise_iclk(
 
 /// Given an image, return an image pyramid with the largest size first and halving the size
 /// every time until either the max-levels are reached or the minimum size is reached.
-pub fn img_pyramid<P>(im: &Image<P>, min_dimensions: (u32, u32), max_levels: u32) -> Vec<Image<P>>
-where
-    P: Pixel + 'static,
-{
-    let (min_width, min_height) = min_dimensions;
-    let (mut w, mut h) = im.dimensions();
+pub fn img_pyramid(
+    im: &Array3<f32>,
+    min_dimensions: (usize, usize),
+    max_levels: u32,
+) -> Vec<Array3<f32>> {
+    let (min_height, min_width) = min_dimensions;
+    let (mut h, mut w, _c) = im.dim();
     let mut stack = vec![im.clone()];
 
     for _ in 0..max_levels {
         if w >= min_width * 2 && h >= min_height * 2 {
-            (w, h) = (
-                (w as f32 / 2.0).round() as u32,
-                (h as f32 / 2.0).round() as u32,
+            (h, w) = (
+                (h as f32 / 2.0).round() as usize,
+                (w as f32 / 2.0).round() as usize,
             );
-            let resized = resize(im, w, h, FilterType::CatmullRom);
+            let (resized, _) =
+                Mapping::scale(2.0, 2.0).warp_array3(&stack[stack.len() - 1], (h, w), None);
             stack.push(resized);
         }
     }
     stack
+}
+
+// --------------------------------------------------------------- Python Interface ---------------------------------------------------------------
+/// Main iclk routine, which works for an arbitrary number of channels.
+/// This returns the mapping that warps image 2 onto image 1's reference frame.
+/// The param history however, corresponds to the inverse mappings, i.e from 1 to 2.
+///
+/// Weights can be specified for image 1. They are concatenated to the reference image and
+/// warped together. The warped weights then affect that pixel's loss and is effectively
+/// discarded from the optimization step if it's zero.
+///
+/// Note: No input validation is performed here, im1 and im2 can have different sizes but
+///     the im2 gradients need to have the same size as im2 and im1 weights should match im1.
+///
+/// See: https://www.ri.cmu.edu/pub_files/pub3/baker_simon_2002_3/baker_simon_2002_3.pdf
+#[pyfunction]
+#[pyo3(
+    name = "iclk",
+    signature = (im1, im2, init_mapping=None, im1_weights=None, max_iters=250, stop_early=1e-3, patience=10, message=None)
+)]
+#[allow(clippy::too_many_arguments)]
+pub fn iclk_py(
+    im1: &Bound<'_, PyArray3<f32>>,
+    im2: &Bound<'_, PyArray3<f32>>,
+    init_mapping: Option<Mapping>,
+    im1_weights: Option<&Bound<'_, PyArray3<f32>>>,
+    max_iters: u32,
+    stop_early: f32,
+    patience: u32,
+    message: Option<&str>,
+) -> Result<(Mapping, Vec<Vec<f32>>)> {
+    let img1_array = im1.to_owned().to_owned_array();
+    let img2_array = im2.to_owned().to_owned_array();
+    let (dx, dy) = gradients(&img2_array);
+    let weights = im1_weights.map(|a| a.to_owned().to_owned_array());
+
+    iclk_array(
+        &img1_array,
+        &img2_array,
+        (&dx, &dy),
+        init_mapping.unwrap_or(Mapping::from_params(vec![0.0; 8])),
+        weights.as_ref(),
+        Some(max_iters),
+        Some(stop_early),
+        Some(patience),
+        message,
+    )
+}
+
+#[pyfunction]
+#[pyo3(
+    name = "hierarchical_iclk",
+    signature = (im1, im2, init_mapping=None, im1_weights=None, max_iters=250, min_dimension=16, max_levels=8, stop_early=1e-3, patience=10, message=false)
+)]
+#[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
+pub fn hierarchical_iclk_py(
+    im1: &Bound<'_, PyArray3<f32>>,
+    im2: &Bound<'_, PyArray3<f32>>,
+    init_mapping: Option<Mapping>,
+    im1_weights: Option<&Bound<'_, PyArray3<f32>>>,
+    max_iters: u32,
+    min_dimension: usize,
+    max_levels: u32,
+    stop_early: f32,
+    patience: u32,
+    message: bool,
+) -> Result<(Mapping, HashMap<u32, Vec<Vec<f32>>>)> {
+    let im1 = im1.to_owned().to_owned_array();
+    let im2 = im2.to_owned().to_owned_array();
+    let weights = im1_weights.map(|a| a.to_owned().to_owned_array());
+
+    hierarchical_iclk_array(
+        &im1,
+        &im2,
+        init_mapping.unwrap_or(Mapping::from_params(vec![0.0; 8])),
+        weights.as_ref(),
+        Some(max_iters),
+        (min_dimension, min_dimension),
+        max_levels,
+        Some(stop_early),
+        Some(patience),
+        message,
+    )
+}
+
+/// Given an image, return an image pyramid with the largest size first and halving the size
+/// every time until either the max-levels are reached or the minimum size is reached.
+#[pyfunction]
+#[pyo3(
+    name = "img_pyramid",
+    signature = (im, min_dimension=16, max_levels=8),
+)]
+pub fn img_pyramid_py<'py>(
+    py: Python<'py>,
+    im: &Bound<'py, PyArray3<f32>>,
+    min_dimension: usize,
+    max_levels: u32,
+) -> Vec<Py<PyAny>> {
+    img_pyramid(
+        &im.to_owned().to_owned_array(),
+        (min_dimension, min_dimension),
+        max_levels,
+    )
+    .iter()
+    .map(|a| a.to_pyarray_bound(py).to_owned().into_py(py))
+    .collect()
 }

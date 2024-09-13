@@ -70,7 +70,7 @@ pub struct LKArgs {
 
     /// Number of LK iterations to use
     #[arg(long, default_value_t = 250)]
-    pub iterations: i32,
+    pub iterations: u32,
 
     /// Stop optimization process when parameter updates have an L1 norm less than this value
     #[arg(long, default_value_t = 1e-3)]
@@ -78,7 +78,7 @@ pub struct LKArgs {
 
     /// Controls window size over which parameter updates are averaged, this average is then used in `early_stop`
     #[arg(long, default_value_t = 10)]
-    pub patience: usize,
+    pub patience: u32,
 
     /// Maximum number of levels to use (only used when `--multi`)
     #[arg(long, default_value_t = 8)]
@@ -86,7 +86,7 @@ pub struct LKArgs {
 
     /// Minimum edge length of image at smallest level (only used when `--multi`)
     #[arg(long, default_value_t = 16)]
-    pub min_size: u32,
+    pub min_size: usize,
 
     /// Save parameters of optimization to file
     #[arg(long)]

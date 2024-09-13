@@ -1,6 +1,7 @@
-use std::{ops::DivAssign, str::FromStr};
+use std::ops::DivAssign;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use clap::ValueEnum;
 use conv::ValueInto;
 use heapless::Vec as hVec;
 use image::Pixel;
@@ -21,12 +22,10 @@ use rayon::{
     slice::ParallelSliceMut,
 };
 use strum::{EnumCount, VariantArray};
-use strum_macros::{Display, EnumString};
+use strum_macros::Display;
 
-// Note: We cannot use #[pyclass] her as we're stuck in pyo3@0.15.2 to support py36, so
-// we use `EnumString` to convert strings into their enum values.
-// TODO: Use pyclass and remove strum dependency when we drop py36 support.
-#[derive(Copy, Clone, Debug, EnumString, Display, PartialEq, EnumCount, VariantArray)]
+#[pyclass]
+#[derive(Copy, Clone, Debug, Display, ValueEnum, PartialEq, EnumCount, VariantArray)]
 pub enum TransformationType {
     Unknown,
     Identity,
@@ -44,6 +43,35 @@ impl TransformationType {
             TransformationType::Projective => 8,
             TransformationType::Unknown => 0,
         }
+    }
+}
+
+#[pymethods]
+impl TransformationType {
+    /// Get all variants of the `TransformationType` enum.
+    #[staticmethod]
+    pub fn variants() -> Vec<TransformationType> {
+        Self::VARIANTS.to_vec()
+    }
+
+    /// Get transform type from it's string repr, options are:
+    /// "unknown", "identity", "translational", "affine", "projective".
+    #[staticmethod]
+    #[pyo3(name = "from_str", signature = (name))]
+    pub fn from_str_py(name: &str) -> PyResult<Self> {
+        Self::from_str(name, true).map_err(|_| {
+            anyhow!(
+                "Invalid variant: Expected one of {:?}, got {:}",
+                TransformationType::VARIANTS.to_vec(),
+                name
+            )
+            .into()
+        })
+    }
+
+    /// Fetch string representation of transform type.
+    pub fn to_str(&self) -> String {
+        self.to_string()
     }
 }
 
@@ -188,7 +216,7 @@ impl Mapping {
     ///         Pre-allocated buffer which will hold which pixels have been warped. This tracks which
     ///         pixels are out of bounds. Again, dimensionality is not important here.
     ///     points: Nx2 array of xy pairs of points to sample (after warping them by self).
-    ///     background: If provided, interpolate betwen this color and data when sample is near border.
+    ///     background: If provided, interpolate between this color and data when sample is near border.
     ///     func:
     ///         Option of a function that describes what to do with sampled pixel.
     ///         It takes a mutable reference slice of the `out` buffer and a (possibly longer)
@@ -235,7 +263,7 @@ impl Mapping {
         };
 
         // Warp all points and determine indices of in-bound ones
-        let warpd = self.warp_points(points);
+        let warped = self.warp_points(points);
         let in_range_x =
             |x: f32, padding: f32| -padding <= x && x <= (data_w as f32) - 1.0 + padding;
         let in_range_y =
@@ -266,8 +294,8 @@ impl Mapping {
         (
             out.as_slice_mut().unwrap().par_chunks_mut(data_c),
             valid.as_slice_mut().unwrap().par_iter_mut(),
-            warpd.column(0).axis_iter(Axis(0)),
-            warpd.column(1).axis_iter(Axis(0)),
+            warped.column(0).axis_iter(Axis(0)),
+            warped.column(1).axis_iter(Axis(0)),
         )
             .into_par_iter()
             .for_each(|(out_slice, valid_slice, x_, y_)| {
@@ -295,7 +323,7 @@ impl Mapping {
                 let (tl, tr, bl, br) = if (0.0 <= left && right <= (data_w as f32) - 1.0)
                     && (0.0 <= top && bottom <= (data_h as f32) - 1.0)
                 {
-                    // Strictly in range, no neighbooring pixels are bkg
+                    // Strictly in range, no neighboring pixels are bkg
                     (
                         get_pix_unchecked(left, top),
                         get_pix_unchecked(right, top),
@@ -314,11 +342,11 @@ impl Mapping {
 
                 // Currently, the channel dimension cannot be known at compile time
                 // even if it's usually either P::CHANNEL_COUNT, 3 or 1. Letting the compiler know
-                // this info would be done via generic_const_exprs which are currenly unstable.
+                // this info would be done via generic_const_exprs which are currently unstable.
                 // Without this we can either:
                 //      1) Collect all channels into a Vec and process that, which incurs a _lot_
                 //         of allocs of small vectors (one per pixel), but allows for whole pixel operations.
-                //      2) Process subpixels in a streaming manner with iterators. Avoids unneccesary
+                //      2) Process subpixels in a streaming manner with iterators. Avoids unnecessary
                 //         allocs but constrains us to only subpixel ops (add, mul, etc).
                 // We choose to collect into a vector for greater flexibility, however we use a heapless
                 // vectors which saves us from the alloc at the cost of a constant and maximum channel depth.
@@ -357,7 +385,7 @@ impl Mapping {
     ) -> Result<Self> {
         Ok(Self::from_matrix(
             mat.to_owned().to_owned_array(),
-            TransformationType::from_str(kind)?,
+            TransformationType::from_str_py(kind)?,
         ))
     }
 
@@ -387,7 +415,15 @@ impl Mapping {
                 vec![*p1 + 1.0, *p3, *p5, *p2, *p4 + 1.0, *p6, *p7, *p8, 1.0],
                 TransformationType::Projective,
             ),
-            _ => panic!("Expected 0, 2, 6 or 8 parameters, got {:}", params.len()),
+            _ => panic!(
+                "Expected number of parameters to be one of {:?}, instead got {:}",
+                TransformationType::VARIANTS
+                    .into_iter()
+                    .filter(|v| **v != TransformationType::Unknown)
+                    .map(|v| v.num_params())
+                    .collect::<Vec<_>>(),
+                params.len()
+            ),
         };
 
         let mat = Array2::from_shape_vec((3, 3), full_params).unwrap();
@@ -452,7 +488,7 @@ impl Mapping {
     }
 
     /// Interpolate a list of Mappings and query multiple points.
-    /// This defaults to performing a cubic spline iterpolation of the warp params, and
+    /// This defaults to performing a cubic spline interpolation of the warp params, and
     /// falls back to linear interpolation if not enough data points are known (<2).
     #[staticmethod]
     #[pyo3(
@@ -556,7 +592,7 @@ impl Mapping {
         }
     }
 
-    /// Get all parameters of the Mapping (overparameterized for everything but projective warp).
+    /// Get all parameters of the Mapping (over parameterized for everything but projective warp).
     #[pyo3(text_signature = "(self) -> List[float]")]
     pub fn get_params_full(&self) -> Vec<f32> {
         let p = (&self.mat.clone() / self.mat[(2, 2)]).into_raw_vec();
@@ -728,7 +764,7 @@ impl Mapping {
 
     #[setter(kind)]
     pub fn kind_setter(&mut self, kind: &str) -> Result<()> {
-        self.kind = TransformationType::from_str(kind)?;
+        self.kind = TransformationType::from_str_py(kind)?;
         Ok(())
     }
 
@@ -737,6 +773,10 @@ impl Mapping {
             "Mapping(mat={:6.4}, kind=\"{}\")",
             self.mat, self.kind
         ))
+    }
+
+    pub fn __repr__(&self) -> Result<String> {
+        self.__str__()
     }
 }
 
@@ -760,8 +800,8 @@ mod test_warps {
             TransformationType::Projective,
         );
         let point = array![[0, 0]];
-        let warpd = map.warp_points(&point);
-        assert_relative_eq!(warpd, array![[3.56534624, 0.61332092]]);
+        let warped = map.warp_points(&point);
+        assert_relative_eq!(warped, array![[3.56534624, 0.61332092]]);
     }
 
     #[test]

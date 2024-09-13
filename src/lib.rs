@@ -10,11 +10,19 @@ pub mod warps;
 
 use pyo3::prelude::*;
 
-use crate::{scripts::cli_entrypoint, warps::Mapping};
+use crate::{
+    lk::{hierarchical_iclk_py, iclk_py, img_pyramid_py},
+    scripts::cli_entrypoint,
+    warps::{Mapping, TransformationType},
+};
 
 #[pymodule]
 fn spano(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_wrapped(wrap_pyfunction!(cli_entrypoint))?;
+    m.add_wrapped(wrap_pyfunction!(iclk_py))?;
+    m.add_wrapped(wrap_pyfunction!(hierarchical_iclk_py))?;
+    m.add_wrapped(wrap_pyfunction!(img_pyramid_py))?;
     m.add_class::<Mapping>()?;
+    m.add_class::<TransformationType>()?;
     Ok(())
 }

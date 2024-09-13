@@ -40,5 +40,14 @@ def test_warp_array():
         .rescale(1 / 16)
     )
 
-    warpd, valid = map.warp_array(src, (480, 640), [128, 0, 0])
-    assert np.allclose(warpd, dst, atol=1)
+    warped, _ = map.warp_array(src, (480, 640), [128, 0, 0])
+    assert np.allclose(warped, dst, atol=1)
+
+
+def test_transformtypes():
+    from spano import TransformationType
+
+    for var in TransformationType.variants():
+        assert var == TransformationType.from_str(var.to_str())
+        assert var == TransformationType.from_str(var.to_str().upper())
+        assert var == TransformationType.from_str(var.to_str().lower())
