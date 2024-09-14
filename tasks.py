@@ -1,52 +1,17 @@
 import json
 from pathlib import Path
 
-import matplotlib.pyplot as plt
-import numpy as np
 from invoke import task
 
-from spano import Mapping
+from spano import plot_params
 
 
-@task(iterable=["in_file"])
-def plot(_, in_file, normalize=False):
-    _, axes = plt.subplots(nrows=1, ncols=len(in_file), sharey=True, squeeze=False)
+def load_params(path):
+    with open(path, "r") as f:
+        return json.load(f)
 
-    if len(in_file) > 1 and normalize:
-        print(
-            "WARNING: Normalizing each DOF independently, no direct comparison should be done between plots."
-        )
 
-    for p, ax in zip(in_file, axes.flatten()):
-        ax.set_title(Path(p).name)
-
-        with open(p, "r") as f:
-            data = json.load(f)
-
-        if isinstance(data, list):
-            if normalize:
-                data /= np.abs(data).max(axis=0)
-
-            for i, v in enumerate(np.array(data).T):
-                ax.plot(v, label=i, c=f"C{i}")
-        else:
-            data = {
-                int(k): [
-                    Mapping.from_params(i).rescale(1 / int(k)).get_params() for i in v
-                ]
-                for k, v in data.items()
-            }
-            data = sorted(data.items(), reverse=True)
-            steps = np.cumsum([0] + [len(v) for _, v in data])
-            data = np.concatenate([v for _, v in data])
-
-            if normalize:
-                data /= np.abs(data).max(axis=0)
-
-            for i, v in enumerate(data.T):
-                ax.plot(v, c=f"C{i}", label=i)
-
-            for offset in steps[1:-1]:
-                ax.axvline(x=offset, c="k", ls="--", alpha=0.2)
-    plt.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
-    plt.show()
+@task(iterable=["in_files"])
+def plot(_, in_files, normalize=False):
+    param_groups = {Path(file).name: load_params(file) for file in in_files}
+    plot_params(param_groups, normalize=normalize)

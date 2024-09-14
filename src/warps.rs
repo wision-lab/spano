@@ -14,7 +14,7 @@ use ndarray::{
 use ndarray_interp::interp1d::{CubicSpline, Interp1DBuilder, Linear};
 use ndarray_linalg::solve::Inverse;
 use num_traits::AsPrimitive;
-use numpy::{PyArray1, PyArray2, PyArray3, PyArrayMethods, ToPyArray};
+use numpy::{PyArray1, PyArray2, PyArray3, PyArrayDyn, PyArrayMethods, ToPyArray};
 use photoncube2video::transforms::{array3_to_image, ref_image_to_array3};
 use pyo3::{prelude::*, types::PyType};
 use rayon::{
@@ -23,6 +23,8 @@ use rayon::{
 };
 use strum::{EnumCount, VariantArray};
 use strum_macros::Display;
+
+use crate::lk::pyarray_to_im_bridge;
 
 #[pyclass]
 #[derive(Copy, Clone, Debug, Display, ValueEnum, PartialEq, EnumCount, VariantArray)]
@@ -729,16 +731,16 @@ impl Mapping {
     pub fn warp_array3_py<'py>(
         &'py self,
         py: Python<'py>,
-        data: &Bound<'_, PyArray3<f32>>,
+        data: &Bound<'_, PyArrayDyn<f32>>,
         out_size: (usize, usize),
         background: Option<Vec<f32>>,
-    ) -> (Bound<'_, PyArray3<f32>>, Bound<'_, PyArray2<bool>>) {
+    ) -> Result<(Bound<'_, PyArray3<f32>>, Bound<'_, PyArray2<bool>>)> {
         let (out, valid) = self.warp_array3(
-            unsafe { &data.as_array() },
+            &pyarray_to_im_bridge(data)?,
             out_size,
             background.map(Array1::from_vec),
         );
-        (out.to_pyarray_bound(py), valid.to_pyarray_bound(py))
+        Ok((out.to_pyarray_bound(py), valid.to_pyarray_bound(py)))
     }
 
     #[getter(mat)]

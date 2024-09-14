@@ -13,7 +13,7 @@ use ndarray::{
 };
 use ndarray_linalg::solve::Inverse;
 use ndarray_ndimage::{correlate, BorderMode};
-use numpy::{PyArray3, PyArrayMethods, ToPyArray};
+use numpy::{PyArrayDyn, PyArrayMethods, ToPyArray};
 use photoncube2video::transforms::ref_image_to_array3;
 use pyo3::prelude::*;
 use rayon::prelude::*;
@@ -509,6 +509,23 @@ pub fn img_pyramid(
 }
 
 // --------------------------------------------------------------- Python Interface ---------------------------------------------------------------
+pub fn pyarray_to_im_bridge<'py>(
+    im: &Bound<'py, PyArrayDyn<f32>>,
+) -> PyResult<Array3<f32>> {
+    let im = im.to_owned_array();
+    let im = match im.ndim() {
+        2 => im.insert_axis(Axis(2)),
+        3 => im,
+        _ => {
+            return Err(anyhow!(
+                "Expected image with 2 or 3 dimensions, stored as HWC. Got {:} dims.",
+                im.ndim(),
+            ).into())
+        }
+    }.into_dimensionality().map_err(|e| anyhow!(e))?;
+    Ok(im)
+}
+
 /// Main iclk routine, which works for an arbitrary number of channels.
 /// This returns the mapping that warps image 2 onto image 1's reference frame.
 /// The param history however, corresponds to the inverse mappings, i.e from 1 to 2.
@@ -528,20 +545,20 @@ pub fn img_pyramid(
 )]
 #[allow(clippy::too_many_arguments)]
 pub fn iclk_py(
-    im1: &Bound<'_, PyArray3<f32>>,
-    im2: &Bound<'_, PyArray3<f32>>,
+    im1: &Bound<'_, PyArrayDyn<f32>>,
+    im2: &Bound<'_, PyArrayDyn<f32>>,
     init_mapping: Option<Mapping>,
-    im1_weights: Option<&Bound<'_, PyArray3<f32>>>,
+    im1_weights: Option<&Bound<'_, PyArrayDyn<f32>>>,
     max_iters: u32,
     stop_early: f32,
     patience: u32,
     message: Option<&str>,
 ) -> Result<(Mapping, Vec<Vec<f32>>)> {
-    let img1_array = im1.to_owned().to_owned_array();
-    let img2_array = im2.to_owned().to_owned_array();
+    let img1_array = pyarray_to_im_bridge(im1)?;
+    let img2_array = pyarray_to_im_bridge(im2)?;
     let (dx, dy) = gradients(&img2_array);
-    let weights = im1_weights.map(|a| a.to_owned().to_owned_array());
-
+    let weights = im1_weights.map(|a| pyarray_to_im_bridge(a)).transpose()?;
+    
     iclk_array(
         &img1_array,
         &img2_array,
@@ -563,10 +580,10 @@ pub fn iclk_py(
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
 pub fn hierarchical_iclk_py(
-    im1: &Bound<'_, PyArray3<f32>>,
-    im2: &Bound<'_, PyArray3<f32>>,
+    im1: &Bound<'_, PyArrayDyn<f32>>,
+    im2: &Bound<'_, PyArrayDyn<f32>>,
     init_mapping: Option<Mapping>,
-    im1_weights: Option<&Bound<'_, PyArray3<f32>>>,
+    im1_weights: Option<&Bound<'_, PyArrayDyn<f32>>>,
     max_iters: u32,
     min_dimension: usize,
     max_levels: u32,
@@ -574,9 +591,9 @@ pub fn hierarchical_iclk_py(
     patience: u32,
     message: bool,
 ) -> Result<(Mapping, HashMap<u32, Vec<Vec<f32>>>)> {
-    let im1 = im1.to_owned().to_owned_array();
-    let im2 = im2.to_owned().to_owned_array();
-    let weights = im1_weights.map(|a| a.to_owned().to_owned_array());
+    let im1 = pyarray_to_im_bridge(im1)?;
+    let im2 = pyarray_to_im_bridge(im2)?;
+    let weights = im1_weights.map(|a| pyarray_to_im_bridge(a)).transpose()?;
 
     hierarchical_iclk_array(
         &im1,
@@ -601,16 +618,24 @@ pub fn hierarchical_iclk_py(
 )]
 pub fn img_pyramid_py<'py>(
     py: Python<'py>,
-    im: &Bound<'py, PyArray3<f32>>,
+    im: &Bound<'py, PyArrayDyn<f32>>,
     min_dimension: usize,
     max_levels: u32,
-) -> Vec<Py<PyAny>> {
-    img_pyramid(
-        &im.to_owned().to_owned_array(),
-        (min_dimension, min_dimension),
-        max_levels,
-    )
-    .iter()
-    .map(|a| a.to_pyarray_bound(py).to_owned().into_py(py))
-    .collect()
+) -> PyResult<Vec<Py<PyAny>>> {
+    let im = im.to_owned().to_owned_array();
+    let im = match im.ndim() {
+        2 => im.insert_axis(Axis(2)),
+        3 => im,
+        _ => {
+            return Err(anyhow!(
+                "Expected image with 2 or 3 dimensions, stored as HWC. Got {:} dims.",
+                im.ndim(),
+            ).into())
+        }
+    }.into_dimensionality().map_err(|e| anyhow!(e))?;
+
+    Ok(img_pyramid(&im, (min_dimension, min_dimension), max_levels)
+        .iter()
+        .map(|a| a.to_pyarray_bound(py).to_owned().into_py(py))
+        .collect())
 }

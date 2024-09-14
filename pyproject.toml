@@ -30,6 +30,7 @@ dev = [
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
+python-source = "python"
 
 [project.scripts]
 spano = "spano:cli_entrypoint"

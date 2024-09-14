@@ -6,3 +6,4 @@
 *.svg
 *.json
 __pycache__/
+/python/**/*.so
