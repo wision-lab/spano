@@ -35,7 +35,7 @@ pub fn distance_transform(size: (usize, usize)) -> Array2<f32> {
 }
 
 /// Find distance to line defined by two points
-/// See: https://en.wikipedia.org/wiki/Distance_from_a_point_to_a_line
+/// See: <https://en.wikipedia.org/wiki/Distance_from_a_point_to_a_line>
 pub fn distance_to_line(p1: (f32, f32), p2: (f32, f32), query: (f32, f32)) -> f32 {
     let (x1, y1) = p1;
     let (x2, y2) = p2;
@@ -74,7 +74,7 @@ pub fn polygon_distance_transform(corners: &Array2<f32>, size: (usize, usize)) -
 
 /// Akin to the distance transform used by opencv or bwdist in MATLB but much more general.
 pub fn polygon_sdf(points: &Array2<f32>, vertices: &Array2<f32>) -> Array1<f32> {
-    // Adapted from: https://www.shadertoy.com/view/wdBXRW
+    // Adapted from: <https://www.shadertoy.com/view/wdBXRW>
 
     let num_points = points.shape()[0];
     let num_vertices = vertices.shape()[0];

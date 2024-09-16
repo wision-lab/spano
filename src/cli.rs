@@ -37,7 +37,7 @@ pub struct Cli {
     #[arg(short, long, default_value = "out.png", global = true)]
     pub output: Option<String>,
 
-    /// Only use every `viz_step` frame for vizualization
+    /// Only use every `viz_step` frame for visualization
     #[arg(long, default_value_t = 10, global = true)]
     pub viz_step: usize,
 

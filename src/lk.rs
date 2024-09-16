@@ -13,8 +13,8 @@ use ndarray::{
 };
 use ndarray_linalg::solve::Inverse;
 use ndarray_ndimage::{correlate, BorderMode};
-use numpy::{PyArrayDyn, PyArrayMethods, ToPyArray};
-use photoncube2video::transforms::ref_image_to_array3;
+use numpy::{Element, PyArrayDyn, PyArrayMethods, ToPyArray};
+use photoncube2video::{signals::DeferredSignal, transforms::ref_image_to_array3};
 use pyo3::prelude::*;
 use rayon::prelude::*;
 
@@ -45,54 +45,150 @@ pub fn gradients(arr: &Array3<f32>) -> (Array3<f32>, Array3<f32>) {
     (dx, dy)
 }
 
-/// Estimate the warp that maps `img2` to `img1` using the Inverse Compositional Lucas-Kanade algorithm.
-/// In other words, img2 is the template and img1 is the static image.
+/// Estimate the warp that maps `img2` to `img1` using the Pyramidal (or multi-level)
+/// Inverse Compositional Lucas-Kanade algorithm. This is akin to calling `iclk` on each level
+/// of `img_pyramid`.
 /// See `iclk_py` for more details.
+#[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
 pub fn iclk<P>(
     im1: &Image<P>,
     im2: &Image<P>,
     init_mapping: Mapping,
     im1_weights: Option<&GrayImage>,
+    multi: bool,
     max_iters: Option<u32>,
+    min_dimension: Option<usize>,
+    max_levels: Option<u32>,
     stop_early: Option<f32>,
     patience: Option<u32>,
-    message: Option<&str>,
-) -> Result<(Mapping, Vec<Vec<f32>>)>
+    message: bool,
+) -> Result<(Mapping, HashMap<u32, Vec<Vec<f32>>>)>
 where
-    P: Pixel + Send + Sync + 'static,
+    P: Pixel + Send + Sync,
     <P as Pixel>::Subpixel: Send + Sync + 'static,
     <P as Pixel>::Subpixel: ValueInto<f32> + From<u8> + Clamp<f32>,
     f32: ValueFrom<<P as Pixel>::Subpixel> + From<<P as Pixel>::Subpixel>,
 {
-    let img1_array = ref_image_to_array3(im1).mapv(f32::from).to_owned();
-    let img2_array = ref_image_to_array3(im2).mapv(f32::from).to_owned();
-    let (dx, dy) = gradients(&img2_array);
-    let weights = im1_weights.map(|w| {
+    let im1 = ref_image_to_array3(im1).mapv(f32::from).to_owned();
+    let im2 = ref_image_to_array3(im2).mapv(f32::from).to_owned();
+    let weights = im1_weights.as_ref().map(|w| {
         ref_image_to_array3::<Luma<u8>>(w)
             .mapv(|v| v as f32 / 255.0)
             .to_owned()
     });
 
     iclk_array(
-        &img1_array,
-        &img2_array,
-        (&dx, &dy),
+        &im1,
+        &im2,
         init_mapping,
         weights.as_ref(),
+        multi,
         max_iters,
+        min_dimension,
+        max_levels,
         stop_early,
         patience,
         message,
     )
 }
 
-/// See `iclk_py` for more.
+/// See `iclk_py` for more details.
+#[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
 pub fn iclk_array(
     im1: &Array3<f32>,
     im2: &Array3<f32>,
-    im2_grad: (&Array3<f32>, &Array3<f32>),
+    init_mapping: Mapping,
+    im1_weights: Option<&Array3<f32>>,
+    multi: bool,
+    max_iters: Option<u32>,
+    min_dimension: Option<usize>,
+    max_levels: Option<u32>,
+    stop_early: Option<f32>,
+    patience: Option<u32>,
+    message: bool,
+) -> Result<(Mapping, HashMap<u32, Vec<Vec<f32>>>)> {
+    let mut all_params_history = HashMap::new();
+
+    // Early out with single scale matching
+    if !multi {
+        let msg = if message { Some("Matching") } else { None };
+        let (mapping, params_history) = _iclk_single(
+            im1,
+            im2,
+            init_mapping,
+            im1_weights,
+            max_iters,
+            stop_early,
+            patience,
+            msg,
+        )?;
+        all_params_history.insert(1, params_history);
+        return Ok((mapping, all_params_history));
+    }
+
+    // Perform multi-scale matching
+    let min_dimension = min_dimension.unwrap_or(16);
+    let min_dimensions = (min_dimension, min_dimension);
+    let max_levels = max_levels.unwrap_or(8);
+    let stack_im1 = img_pyramid(im1, min_dimensions, max_levels);
+    let stack_im2 = img_pyramid(im2, min_dimensions, max_levels);
+
+    let num_lvls = stack_im1.len().min(stack_im2.len());
+    let mut mapping = init_mapping;
+    let mut all_params_history = HashMap::new();
+
+    let stack_weights = im1_weights.map_or(vec![None; num_lvls], |weights| {
+        img_pyramid(weights, min_dimensions, max_levels)
+            .into_iter()
+            .map(Some)
+            .collect()
+    });
+
+    for (i, (im1, im2, weights)) in izip!(
+        stack_im1[..num_lvls].iter().rev(),
+        stack_im2[..num_lvls].iter().rev(),
+        stack_weights[..num_lvls].iter().rev()
+    )
+    .enumerate()
+    {
+        // Compute mapping at lowest resolution first and double resolution it at each iteration
+        let current_scale = (1 << (num_lvls - i - 1)) as f32;
+
+        // Perform optimization at lvl
+        let params_history;
+        let msg = format!("Matching scale 1/{:}", &current_scale);
+        let msg = if message { Some(msg) } else { None };
+
+        (mapping, params_history) = _iclk_single(
+            im1,
+            im2,
+            mapping,
+            weights.as_ref(),
+            max_iters,
+            stop_early,
+            patience,
+            msg.as_deref(),
+        )?;
+
+        // Re-normalize mapping to scale of next level of pyramid
+        // But not on last iteration (since we're already at full scale)
+        if i + 1 < num_lvls {
+            mapping = mapping.rescale(0.5);
+        }
+
+        // Save level's param history
+        all_params_history.insert(current_scale as u32, params_history);
+    }
+
+    Ok((mapping, all_params_history))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn _iclk_single(
+    im1: &Array3<f32>,
+    im2: &Array3<f32>,
     init_mapping: Mapping,
     im1_weights: Option<&Array3<f32>>,
     max_iters: Option<u32>,
@@ -118,11 +214,11 @@ pub fn iclk_array(
         (im1, false)
     };
     let mut warped_im1gray_pixels = Array2::<f32>::zeros((num_points, c + has_weights as usize));
+    let (dx, dy) = gradients(im2);
     let img2_pixels = im2.view().into_shape((num_points, c))?;
     let mut valid = Array1::<bool>::from_elem(num_points, false);
 
     // These can be cached, so we init them before the main loop
-    let (dx, dy) = im2_grad;
     let (steepest_descent_ic_t, hessian_inv) = match init_mapping.kind {
         TransformationType::Identity => return Ok((Mapping::identity(), vec![vec![]])),
         TransformationType::Translational => {
@@ -264,7 +360,7 @@ pub fn iclk_array(
         // TODO: Warp with background or without?
         let mapping = Mapping::from_params(params);
         mapping.warp_array3_into::<f32, _, _, _, _, _>(
-            &img1_array,
+            img1_array,
             &mut warped_im1gray_pixels,
             &mut valid,
             &points,
@@ -323,133 +419,19 @@ pub fn iclk_array(
     Ok((Mapping::from_params(params).inverse(), params_history))
 }
 
-/// Estimate the warp that maps `img2` to `img1` using the Pyramidal (or multi-level)
-/// Inverse Compositional Lucas-Kanade algorithm. This is akin to calling `iclk` on each level
-/// of `img_pyramid`.
-/// See `hierarchical_iclk_py` for more details.
-#[allow(clippy::type_complexity)]
-#[allow(clippy::too_many_arguments)]
-pub fn hierarchical_iclk<P>(
-    im1: &Image<P>,
-    im2: &Image<P>,
-    init_mapping: Mapping,
-    im1_weights: Option<&GrayImage>,
-    max_iters: Option<u32>,
-    min_dimensions: (usize, usize),
-    max_levels: u32,
-    stop_early: Option<f32>,
-    patience: Option<u32>,
-    message: bool,
-) -> Result<(Mapping, HashMap<u32, Vec<Vec<f32>>>)>
-where
-    P: Pixel + Send + Sync,
-    <P as Pixel>::Subpixel: Send + Sync + 'static,
-    <P as Pixel>::Subpixel: ValueInto<f32> + From<u8> + Clamp<f32>,
-    f32: ValueFrom<<P as Pixel>::Subpixel> + From<<P as Pixel>::Subpixel>,
-{
-    let im1 = ref_image_to_array3(im1).mapv(f32::from).to_owned();
-    let im2 = ref_image_to_array3(im2).mapv(f32::from).to_owned();
-    let weights = im1_weights.as_ref().map(|w| {
-        ref_image_to_array3::<Luma<u8>>(w)
-            .mapv(|v| v as f32 / 255.0)
-            .to_owned()
-    });
-
-    hierarchical_iclk_array(
-        &im1,
-        &im2,
-        init_mapping,
-        weights.as_ref(),
-        max_iters,
-        min_dimensions,
-        max_levels,
-        stop_early,
-        patience,
-        message,
-    )
-}
-
-/// See `hierarchical_iclk_array_py` for more details.
-#[allow(clippy::type_complexity)]
-#[allow(clippy::too_many_arguments)]
-pub fn hierarchical_iclk_array(
-    im1: &Array3<f32>,
-    im2: &Array3<f32>,
-    init_mapping: Mapping,
-    im1_weights: Option<&Array3<f32>>,
-    max_iters: Option<u32>,
-    min_dimensions: (usize, usize),
-    max_levels: u32,
-    stop_early: Option<f32>,
-    patience: Option<u32>,
-    message: bool,
-) -> Result<(Mapping, HashMap<u32, Vec<Vec<f32>>>)> {
-    let stack_im1 = img_pyramid(&im1, min_dimensions, max_levels);
-    let stack_im2 = img_pyramid(&im2, min_dimensions, max_levels);
-
-    let num_lvls = stack_im1.len().min(stack_im2.len());
-    let mut mapping = init_mapping;
-    let mut all_params_history = HashMap::new();
-
-    let stack_weights = im1_weights.map_or(vec![None; num_lvls], |weights| {
-        img_pyramid(&weights, min_dimensions, max_levels)
-            .into_iter()
-            .map(Some)
-            .collect()
-    });
-
-    for (i, (im1, im2, weights)) in izip!(
-        stack_im1[..num_lvls].iter().rev(),
-        stack_im2[..num_lvls].iter().rev(),
-        stack_weights[..num_lvls].iter().rev()
-    )
-    .enumerate()
-    {
-        // Compute mapping at lowest resolution first and double resolution it at each iteration
-        let current_scale = (1 << (num_lvls - i - 1)) as f32;
-
-        // Perform optimization at lvl
-        let params_history;
-        let msg = format!("Matching scale 1/{:}", &current_scale);
-        let msg = if message { Some(msg) } else { None };
-        let (dx, dy) = gradients(im2);
-
-        (mapping, params_history) = iclk_array(
-            im1,
-            im2,
-            (&dx, &dy),
-            mapping,
-            weights.as_ref(),
-            max_iters,
-            stop_early,
-            patience,
-            msg.as_deref(),
-        )?;
-
-        // Re-normalize mapping to scale of next level of pyramid
-        // But not on last iteration (since we're already at full scale)
-        if i + 1 < num_lvls {
-            mapping = mapping.rescale(0.5);
-        }
-
-        // Save level's param history
-        all_params_history.insert(current_scale as u32, params_history);
-    }
-
-    Ok((mapping, all_params_history))
-}
-
-/// Estimate pairwise registration using single level iclk
+/// Estimate pairwise registration using iclk
 #[allow(clippy::too_many_arguments)]
 pub fn pairwise_iclk(
     frames: &Vec<GrayImage>,
     init_mappings: &[Mapping],
-    iterations: u32,
-    early_stop: f32,
-    patience: u32,
-    message: Option<&str>,
+    multi: bool,
+    max_iters: Option<u32>,
+    stop_early: Option<f32>,
+    patience: Option<u32>,
+    message: bool,
 ) -> Result<Vec<Mapping>> {
-    let pbar = get_pbar(frames.len() - 1, message);
+    let msg = if message { Some("Matching") } else { None };
+    let pbar = get_pbar(frames.len() - 1, msg);
 
     // Iterate over sliding window of pairwise frames (in parallel!)
     let mappings: Vec<Mapping> = frames
@@ -459,18 +441,19 @@ pub fn pairwise_iclk(
             pbar.inc(1);
             let img1_array = ref_image_to_array3(&window[0]).mapv(f32::from).to_owned();
             let img2_array = ref_image_to_array3(&window[1]).mapv(f32::from).to_owned();
-            let (dx, dy) = gradients(&img2_array);
 
             iclk_array(
                 &img1_array,
                 &img2_array,
-                (&dx, &dy),
                 init_mapping.clone(),
                 None,
-                Some(iterations),
-                Some(early_stop),
-                Some(patience),
+                multi,
+                max_iters,
                 None,
+                None,
+                stop_early,
+                patience,
+                false,
             )
             // Drop param_history
             .map(|(mapping, _)| mapping)
@@ -490,18 +473,21 @@ pub fn img_pyramid(
     min_dimensions: (usize, usize),
     max_levels: u32,
 ) -> Vec<Array3<f32>> {
-    let (min_height, min_width) = min_dimensions;
-    let (mut h, mut w, _c) = im.dim();
     let mut stack = vec![im.clone()];
+    let (min_width, min_height) = min_dimensions;
+    let (mut h, mut w, _c) = im.dim();
 
     for _ in 0..max_levels {
         if w >= min_width * 2 && h >= min_height * 2 {
-            (h, w) = (
-                (h as f32 / 2.0).round() as usize,
-                (w as f32 / 2.0).round() as usize,
-            );
-            let (resized, _) =
-                Mapping::scale(2.0, 2.0).warp_array3(&stack[stack.len() - 1], (h, w), None);
+            (h, w) = (h / 2, w / 2);
+
+            let resized = (stack[stack.len() - 1]
+                .slice(s![0..h*2;2, 0..w*2;2, ..])
+                .to_owned()
+                + stack[stack.len() - 1].slice(s![0..h*2;2, 1..w*2;2, ..])
+                + stack[stack.len() - 1].slice(s![1..h*2;2, 0..w*2;2, ..])
+                + stack[stack.len() - 1].slice(s![1..h*2;2, 1..w*2;2, ..]))
+                / 4.0;
             stack.push(resized);
         }
     }
@@ -509,9 +495,19 @@ pub fn img_pyramid(
 }
 
 // --------------------------------------------------------------- Python Interface ---------------------------------------------------------------
-pub fn pyarray_to_im_bridge<'py>(
-    im: &Bound<'py, PyArrayDyn<f32>>,
-) -> PyResult<Array3<f32>> {
+pub fn pyarray_to_im_bridge<T: Element>(im: &Bound<'_, PyAny>) -> PyResult<Array3<T>> {
+    let im = if let Ok(im) = im.downcast::<PyArrayDyn<f64>>() {
+        im.cast::<T>(false)?
+    } else if let Ok(im) = im.downcast::<PyArrayDyn<f32>>() {
+        im.cast::<T>(false)?
+    } else if let Ok(im) = im.downcast::<PyArrayDyn<u8>>() {
+        im.cast::<T>(false)?
+    } else {
+        return Err(
+            anyhow!("Array dtype not understood, expected float64, float32 or uint8").into(),
+        );
+    };
+
     let im = im.to_owned_array();
     let im = match im.ndim() {
         2 => im.insert_axis(Axis(2)),
@@ -520,9 +516,12 @@ pub fn pyarray_to_im_bridge<'py>(
             return Err(anyhow!(
                 "Expected image with 2 or 3 dimensions, stored as HWC. Got {:} dims.",
                 im.ndim(),
-            ).into())
+            )
+            .into())
         }
-    }.into_dimensionality().map_err(|e| anyhow!(e))?;
+    }
+    .into_dimensionality()
+    .map_err(|e| anyhow!(e))?;
     Ok(im)
 }
 
@@ -537,53 +536,21 @@ pub fn pyarray_to_im_bridge<'py>(
 /// Note: No input validation is performed here, im1 and im2 can have different sizes but
 ///     the im2 gradients need to have the same size as im2 and im1 weights should match im1.
 ///
-/// See: https://www.ri.cmu.edu/pub_files/pub3/baker_simon_2002_3/baker_simon_2002_3.pdf
+/// See: <https://www.ri.cmu.edu/pub_files/pub3/baker_simon_2002_3/baker_simon_2002_3.pdf>
 #[pyfunction]
 #[pyo3(
     name = "iclk",
-    signature = (im1, im2, init_mapping=None, im1_weights=None, max_iters=250, stop_early=1e-3, patience=10, message=None)
-)]
-#[allow(clippy::too_many_arguments)]
-pub fn iclk_py(
-    im1: &Bound<'_, PyArrayDyn<f32>>,
-    im2: &Bound<'_, PyArrayDyn<f32>>,
-    init_mapping: Option<Mapping>,
-    im1_weights: Option<&Bound<'_, PyArrayDyn<f32>>>,
-    max_iters: u32,
-    stop_early: f32,
-    patience: u32,
-    message: Option<&str>,
-) -> Result<(Mapping, Vec<Vec<f32>>)> {
-    let img1_array = pyarray_to_im_bridge(im1)?;
-    let img2_array = pyarray_to_im_bridge(im2)?;
-    let (dx, dy) = gradients(&img2_array);
-    let weights = im1_weights.map(|a| pyarray_to_im_bridge(a)).transpose()?;
-    
-    iclk_array(
-        &img1_array,
-        &img2_array,
-        (&dx, &dy),
-        init_mapping.unwrap_or(Mapping::from_params(vec![0.0; 8])),
-        weights.as_ref(),
-        Some(max_iters),
-        Some(stop_early),
-        Some(patience),
-        message,
-    )
-}
-
-#[pyfunction]
-#[pyo3(
-    name = "hierarchical_iclk",
-    signature = (im1, im2, init_mapping=None, im1_weights=None, max_iters=250, min_dimension=16, max_levels=8, stop_early=1e-3, patience=10, message=false)
+    signature = (im1, im2, init_mapping=None, im1_weights=None, multi=true, max_iters=250, min_dimension=16, max_levels=8, stop_early=1e-3, patience=10, message=false)
 )]
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
-pub fn hierarchical_iclk_py(
-    im1: &Bound<'_, PyArrayDyn<f32>>,
-    im2: &Bound<'_, PyArrayDyn<f32>>,
+pub fn iclk_py<'py>(
+    py: Python<'py>,
+    im1: &Bound<'py, PyAny>,
+    im2: &Bound<'py, PyAny>,
     init_mapping: Option<Mapping>,
-    im1_weights: Option<&Bound<'_, PyArrayDyn<f32>>>,
+    im1_weights: Option<&Bound<'py, PyAny>>,
+    multi: bool,
     max_iters: u32,
     min_dimension: usize,
     max_levels: u32,
@@ -591,18 +558,21 @@ pub fn hierarchical_iclk_py(
     patience: u32,
     message: bool,
 ) -> Result<(Mapping, HashMap<u32, Vec<Vec<f32>>>)> {
+    let _defer = DeferredSignal::new(py, "SIGINT")?;
+
     let im1 = pyarray_to_im_bridge(im1)?;
     let im2 = pyarray_to_im_bridge(im2)?;
     let weights = im1_weights.map(|a| pyarray_to_im_bridge(a)).transpose()?;
 
-    hierarchical_iclk_array(
+    iclk_array(
         &im1,
         &im2,
         init_mapping.unwrap_or(Mapping::from_params(vec![0.0; 8])),
         weights.as_ref(),
+        multi,
         Some(max_iters),
-        (min_dimension, min_dimension),
-        max_levels,
+        Some(min_dimension),
+        Some(max_levels),
         Some(stop_early),
         Some(patience),
         message,
@@ -618,24 +588,18 @@ pub fn hierarchical_iclk_py(
 )]
 pub fn img_pyramid_py<'py>(
     py: Python<'py>,
-    im: &Bound<'py, PyArrayDyn<f32>>,
+    im: &Bound<'py, PyAny>,
     min_dimension: usize,
     max_levels: u32,
 ) -> PyResult<Vec<Py<PyAny>>> {
-    let im = im.to_owned().to_owned_array();
-    let im = match im.ndim() {
-        2 => im.insert_axis(Axis(2)),
-        3 => im,
-        _ => {
-            return Err(anyhow!(
-                "Expected image with 2 or 3 dimensions, stored as HWC. Got {:} dims.",
-                im.ndim(),
-            ).into())
-        }
-    }.into_dimensionality().map_err(|e| anyhow!(e))?;
+    let _defer = DeferredSignal::new(py, "SIGINT")?;
 
-    Ok(img_pyramid(&im, (min_dimension, min_dimension), max_levels)
-        .iter()
-        .map(|a| a.to_pyarray_bound(py).to_owned().into_py(py))
-        .collect())
+    Ok(img_pyramid(
+        &pyarray_to_im_bridge(im)?,
+        (min_dimension, min_dimension),
+        max_levels,
+    )
+    .iter()
+    .map(|a| a.to_pyarray_bound(py).to_owned().into_py(py))
+    .collect())
 }

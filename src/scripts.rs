@@ -1,8 +1,4 @@
-use std::{
-    env,
-    fs::{create_dir_all, write},
-    path::Path,
-};
+use std::{env, fs::write, path::Path};
 
 use anyhow::{anyhow, Result};
 use image::{
@@ -25,13 +21,12 @@ use rayon::{
     iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator},
     slice::ParallelSlice,
 };
-use tempfile::tempdir;
 
 use crate::{
     blend::merge_images,
     cli::{Cli, Commands, LKArgs, Parser},
-    lk::{hierarchical_iclk, iclk, pairwise_iclk},
-    utils::{animate_hierarchical_warp, animate_warp, stabilized_video},
+    lk::{iclk, pairwise_iclk},
+    utils::{animate_warp, stabilized_video},
     warps::Mapping,
 };
 
@@ -80,73 +75,39 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
         FilterType::CatmullRom,
     );
 
-    // Perform Matching
-    let (mapping, params_history_str, num_steps) = if !lk_args.multi {
-        // Conditionally convert images to grayscale, then register images
-        let (mapping, params_history) = if lk_args.grayscale {
-            let img1 = grayscale(&img1);
-            let img2 = grayscale(&img2);
-
-            iclk(
-                &img1,
-                &img2,
-                Mapping::from_params(vec![0.0; 8]),
-                weights.as_ref(),
-                Some(lk_args.iterations),
-                Some(lk_args.early_stop),
-                Some(lk_args.patience),
-                Some("Matching..."),
-            )?
-        } else {
-            iclk(
-                &img1,
-                &img2,
-                Mapping::from_params(vec![0.0; 8]),
-                weights.as_ref(),
-                Some(lk_args.iterations),
-                Some(lk_args.early_stop),
-                Some(lk_args.patience),
-                Some("Matching..."),
-            )?
-        };
-        let num_steps = params_history.len();
-        let params_history_str = serde_json::to_string_pretty(&params_history)?;
-        (mapping, params_history_str, num_steps - 1)
+    // Conditionally convert images to grayscale, then register images
+    let (mapping, params_history) = if lk_args.grayscale {
+        let img1 = grayscale(&img1);
+        let img2 = grayscale(&img2);
+        iclk(
+            &img1,
+            &img2,
+            Mapping::from_params(vec![0.0; 8]),
+            weights.as_ref(),
+            lk_args.multi,
+            Some(lk_args.iterations),
+            Some(lk_args.min_size),
+            Some(lk_args.max_lvls),
+            Some(lk_args.early_stop),
+            Some(lk_args.patience),
+            true,
+        )?
     } else {
-        // Conditionally convert images to grayscale, then register images
-        let (mapping, params_history) = if lk_args.grayscale {
-            let img1 = grayscale(&img1);
-            let img2 = grayscale(&img2);
-            hierarchical_iclk(
-                &img1,
-                &img2,
-                Mapping::from_params(vec![0.0; 8]),
-                weights.as_ref(),
-                Some(lk_args.iterations),
-                (lk_args.min_size, lk_args.min_size),
-                lk_args.max_lvls,
-                Some(lk_args.early_stop),
-                Some(lk_args.patience),
-                true,
-            )?
-        } else {
-            hierarchical_iclk(
-                &img1,
-                &img2,
-                Mapping::from_params(vec![0.0; 8]),
-                weights.as_ref(),
-                Some(lk_args.iterations),
-                (lk_args.min_size, lk_args.min_size),
-                lk_args.max_lvls,
-                Some(lk_args.early_stop),
-                Some(lk_args.patience),
-                true,
-            )?
-        };
-        let num_steps = params_history.values().map(|v| v.len()).sum();
-        let params_history_str = serde_json::to_string_pretty(&params_history)?;
-        (mapping, params_history_str, num_steps)
+        iclk(
+            &img1,
+            &img2,
+            Mapping::from_params(vec![0.0; 8]),
+            weights.as_ref(),
+            lk_args.multi,
+            Some(lk_args.iterations),
+            Some(lk_args.min_size),
+            Some(lk_args.max_lvls),
+            Some(lk_args.early_stop),
+            Some(lk_args.patience),
+            true,
+        )?
     };
+    let num_steps: usize = params_history.values().map(|v| v.len()).sum();
 
     println!(
         "Found following mapping in {:} steps:\n{:6.4}",
@@ -167,34 +128,19 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
     }
     if let Some(viz_path) = global_args.viz_output {
         println!("Saving animation to {viz_path}...");
-
-        if !lk_args.multi {
-            let params_history = serde_json::from_str(&params_history_str)?;
-            animate_warp(
-                img2_path,
-                params_history,
-                &global_args.img_dir.unwrap(),
-                lk_args.downscale,
-                Some(global_args.viz_fps),
-                Some(global_args.viz_step),
-                Some(&viz_path),
-                Some("Making Video..."),
-            )?;
-        } else {
-            let params_history = serde_json::from_str(&params_history_str)?;
-            animate_hierarchical_warp(
-                img2_path,
-                params_history,
-                lk_args.downscale,
-                &global_args.img_dir.unwrap(),
-                Some(global_args.viz_fps),
-                Some(global_args.viz_step),
-                Some(&viz_path),
-                Some("Making Video..."),
-            )?;
-        }
+        animate_warp(
+            &img2,
+            params_history.clone(),
+            global_args.img_dir,
+            lk_args.downscale,
+            Some(global_args.viz_fps),
+            Some(global_args.viz_step),
+            Some(viz_path),
+            Some("Making Video..."),
+        )?;
     }
     if let Some(params_path) = lk_args.params_path {
+        let params_history_str = serde_json::to_string_pretty(&params_history)?;
         write(params_path, params_history_str).expect("Unable to write params file.");
     }
     Ok(())
@@ -203,7 +149,7 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
 #[pyfunction]
 pub fn cli_entrypoint(py: Python) -> Result<()> {
     // Start by telling python to not intercept CTRL+C signal,
-    // Otherwise we won't get it here and will not be interruptable.
+    // Otherwise we won't get it here and will not be interruptible.
     // See: https://github.com/PyO3/pyo3/pull/3560
     let _defer = DeferredSignal::new(py, "SIGINT")?;
 
@@ -211,16 +157,7 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
     // Since we're actually calling this via python, the first argument
     // is going to be the path to the python interpreter, so we skip it.
     // See: https://www.maturin.rs/bindings#both-binary-and-library
-    let mut args = Cli::parse_from(env::args_os().skip(1));
-
-    // Get img path or tempdir, ensure it exists.
-    let tmp_dir = tempdir()?;
-    let img_dir = args
-        .img_dir
-        .clone()
-        .unwrap_or(tmp_dir.path().to_str().unwrap().to_owned());
-    create_dir_all(&img_dir).ok();
-    args.img_dir = Some(img_dir);
+    let args = Cli::parse_from(env::args_os().skip(1));
 
     match &args.command {
         Commands::LK(lk_args) => match_imgpair(args.clone(), lk_args.clone()),
@@ -243,9 +180,9 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
             }
 
             // Load and pre-process chunks of frames from photoncube
-            // We unpack the bitplanes, avergae them in groups of `burst_size`,
-            // Apply color-spad corrections, and optionally downscale.
-            // Any transforms (i.e: flipud) can be applied here too.
+            // We unpack the bitplanes, average them in groups of `burst_size`,
+            // Apply colorspad corrections, and optionally downscale.
+            // Any transforms (i.e: flip-ud) can be applied here too.
             let mut cube = PhotonCube::open(cube_path)?;
             if let Some(cfa_path) = &pano_args.cfa_path {
                 cube.load_cfa(cfa_path.to_path_buf())?;
@@ -396,13 +333,15 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
                     .collect();
 
                 // Estimate pairwise registration
+                println!("({}/{}): Matching...", num_lvls - lvl, num_lvls);
                 mappings = pairwise_iclk(
                     &virtual_exposures,
                     &mappings[..],
-                    pano_args.lk_args.iterations,
-                    pano_args.lk_args.early_stop,
-                    pano_args.lk_args.patience,
-                    Some(format!("({}/{}): Matching...", num_lvls - lvl, num_lvls).as_str()),
+                    false,
+                    Some(pano_args.lk_args.iterations),
+                    Some(pano_args.lk_args.early_stop),
+                    Some(pano_args.lk_args.patience),
+                    true,
                 )?;
                 all_mappings.push(mappings.clone());
 

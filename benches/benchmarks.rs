@@ -76,10 +76,13 @@ pub fn benchmark_iclk(c: &mut Criterion) {
                 &img_dst,
                 Mapping::from_params(vec![0.0; 8]),
                 None,
+                false,
                 Some(25),
+                None,
+                None,
                 Some(1e-12),
                 Some(1),
-                None,
+                false,
             )
             .unwrap();
         })

@@ -25,7 +25,8 @@ dev = [
     "invoke",
     "streamlit",
     "streamlit-image-comparison",
-    "natsort"
+    "natsort",
+    "ruff"
 ]
 
 [tool.maturin]

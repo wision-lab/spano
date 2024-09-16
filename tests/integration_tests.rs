@@ -3,7 +3,7 @@ use image::{io::Reader as ImageReader, Rgb};
 use ndarray::array;
 use photoncube2video::transforms::image_to_array3;
 use spano::{
-    lk::hierarchical_iclk,
+    lk::iclk,
     warps::{Mapping, TransformationType},
 };
 
@@ -58,14 +58,15 @@ fn test_lk() {
         .unwrap()
         .into_rgb8();
 
-    let (estimated_map, _) = hierarchical_iclk(
+    let (estimated_map, _) = iclk(
         &img_src,
         &img_dst,
         Mapping::from_params(vec![0.0; 8]),
         None,
+        true,
         Some(250),
-        (25, 25),
-        5,
+        Some(25),
+        Some(5),
         Some(1e-3),
         None,
         true,

@@ -5,7 +5,6 @@ Run as: streamlit run dashboard.py
 from pathlib import Path
 import argparse
 import os
-import shutil
 
 import streamlit as st
 from streamlit_image_comparison import *
@@ -24,7 +23,7 @@ def image_comparison(
     make_responsive: bool = True,
     in_memory: bool = False,
     vertical: bool = False,
-) -> components.html:
+):
     """
     Create a comparison slider for two images.
 

@@ -67,7 +67,7 @@ Then you can format the code using:
 cargo +nightly fmt 
 ```
 
-Similarly we use `black` to format the python parts of the project. 
+Similarly we use `black`/`ruff` to format/lint the python parts of the project. 
 
 
 To keep the project lean, it's recommended to check for unused dependencies [using this tool](https://github.com/est31/cargo-udeps), or [this one](https://github.com/bnjbvr/cargo-machete), like so: 
@@ -82,6 +82,12 @@ Finally, we use clippy:
 cargo clippy --no-deps
 ```
 
+## Testing
+We use both rust unit and integration tests, as well as python unit tests to check the bindings:
+```shell
+pytest . 
+cargo test --release 
+```
 
 ## Benchmarking
 
@@ -91,3 +97,6 @@ cargo bench --bench benchmarks -- --profile-time 10
 ```
 
 The graphs will be in `target/criterion/*/profile/flamegraph.svg`.
+
+## Documentation
+Docs are still somewhat limited, but you can explore the rust API documentation locally using `cargo doc --open`.

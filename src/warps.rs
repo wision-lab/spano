@@ -420,7 +420,7 @@ impl Mapping {
             _ => panic!(
                 "Expected number of parameters to be one of {:?}, instead got {:}",
                 TransformationType::VARIANTS
-                    .into_iter()
+                    .iter()
                     .filter(|v| **v != TransformationType::Unknown)
                     .map(|v| v.num_params())
                     .collect::<Vec<_>>(),
@@ -728,6 +728,7 @@ impl Mapping {
         text_signature = "(self, data: np.ndarray, out_size: (int, int), \
         background: Optional[List[float]]) -> (np.ndarray, np.ndarray)"
     )]
+    #[allow(clippy::type_complexity)]
     pub fn warp_array3_py<'py>(
         &'py self,
         py: Python<'py>,

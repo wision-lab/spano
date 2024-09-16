@@ -1,10 +1,5 @@
 import numpy as np
 
-
-def test_imports():
-    from spano import Mapping
-
-
 def test_interp():
     from spano import Mapping
 
@@ -44,7 +39,7 @@ def test_warp_array():
     assert np.allclose(warped, dst, atol=1)
 
 
-def test_transformtypes():
+def test_transform_types():
     from spano import TransformationType
 
     for var in TransformationType.variants():

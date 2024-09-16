@@ -1,8 +1,11 @@
+from os import PathLike
 from typing import List, Tuple, Dict, Optional
 from typing_extensions import Self
 from enum import Enum, auto
 
 import numpy as np
+
+LKParams = Dict[int, List[List[float]]]
 
 class TransformationType(Enum):
     Unknown = auto()
@@ -66,27 +69,28 @@ class Mapping:
     ) -> Tuple[np.ndarray, np.ndarray]: ...
 
 def iclk(
-    img1_array: np.ndarray,
-    img2_array: np.ndarray,
-    init_mapping: Optional[Mapping] = None,
-    im1_weights: Optional[np.ndarray] = None,
-    max_iters: Optional[int] = 250,
-    stop_early: Optional[float] = 1e-3,
-    patience: Optional[int] = 10,
-    message: Optional[str] = None,
-) -> Tuple[Mapping, List[List[float]]]: ...
-def hierarchical_iclk(
     im1: np.ndarray,
     im2: np.ndarray,
     init_mapping: Optional[Mapping] = None,
     im1_weights: Optional[np.ndarray] = None,
+    multi: bool = True,
     max_iters: Optional[int] = 250,
     min_dimension: int = 16,
     max_levels: int = 8,
     stop_early: Optional[float] = 1e-3,
     patience: Optional[int] = 10,
     message: bool = False,
-) -> Tuple[Mapping, Dict[int, List[List[float]]]]: ...
+) -> Tuple[Mapping, LKParams]: ...
 def img_pyramid(
     im: np.ndarray, min_dimension: int = 16, max_levels: int = 8
 ) -> Tuple[np.ndarray, ...]: ...
+def animate_warp(
+    img: np.ndarray,
+    params_history: LKParams,
+    img_dir: Optional[PathLike] = None,
+    scale: float = 1.0,
+    fps: int = 25,
+    step: int = 100,
+    out_path: Optional[PathLike] = None,
+    message: Optional[str] = None,
+) -> None: ...
