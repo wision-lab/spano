@@ -14,7 +14,7 @@ use ndarray::{
 use ndarray_interp::interp1d::{CubicSpline, Interp1DBuilder, Linear};
 use ndarray_linalg::solve::Inverse;
 use num_traits::AsPrimitive;
-use numpy::{PyArray1, PyArray2, PyArray3, PyArrayDyn, PyArrayMethods, ToPyArray};
+use numpy::{Ix2, PyArray1, PyArray2, PyArray3, PyArrayMethods, ToPyArray};
 use photoncube2video::transforms::{array3_to_image, ref_image_to_array3};
 use pyo3::{prelude::*, types::PyType};
 use rayon::{
@@ -24,7 +24,7 @@ use rayon::{
 use strum::{EnumCount, VariantArray};
 use strum_macros::Display;
 
-use crate::lk::pyarray_to_im_bridge;
+use crate::lk::{pyarray_cast, pyarray_to_im_bridge};
 
 #[pyclass]
 #[derive(Copy, Clone, Debug, Display, ValueEnum, PartialEq, EnumCount, VariantArray)]
@@ -378,23 +378,23 @@ impl Mapping {
     #[classmethod]
     #[pyo3(
         name = "from_matrix",
-        text_signature = "(cls, mat: np.ndarray, kind: str) -> Self"
+        text_signature = "(mat: np.ndarray, kind: TransformationType) -> Self"
     )]
     pub fn from_matrix_py(
         _: &Bound<'_, PyType>,
-        mat: &Bound<'_, PyArray2<f32>>,
-        kind: &str,
+        mat: &Bound<'_, PyAny>,
+        kind: TransformationType,
     ) -> Result<Self> {
         Ok(Self::from_matrix(
-            mat.to_owned().to_owned_array(),
-            TransformationType::from_str_py(kind)?,
+            pyarray_cast(mat)?.to_owned_array().into_dimensionality()?,
+            kind,
         ))
     }
 
     /// Given a list of transform parameters, return the Mapping that would transform a
     /// source point to its destination. The type of mapping depends on the number of params (DoF).
     #[staticmethod]
-    #[pyo3(text_signature = "(cls, params: List[float]) -> Self")]
+    #[pyo3(text_signature = "(params: List[float]) -> Self")]
     pub fn from_params(params: Vec<f32>) -> Self {
         let (full_params, kind) = match &params[..] {
             // Identity
@@ -448,7 +448,7 @@ impl Mapping {
 
     /// Return an identity Mapping.
     #[staticmethod]
-    #[pyo3(text_signature = "(cls) -> Self")]
+    #[pyo3(text_signature = "() -> Self")]
     pub fn identity() -> Self {
         Self::from_params(vec![])
     }
@@ -580,7 +580,7 @@ impl Mapping {
     }
 
     /// Get minimum number of parameters that describe the Mapping.
-    #[pyo3(text_signature = "(self) -> List[float]")]
+    #[pyo3(text_signature = "() -> List[float]")]
     pub fn get_params(&self) -> Vec<f32> {
         let p = (&self.mat.clone() / self.mat[(2, 2)]).into_raw_vec();
         match &self.kind {
@@ -595,14 +595,14 @@ impl Mapping {
     }
 
     /// Get all parameters of the Mapping (over parameterized for everything but projective warp).
-    #[pyo3(text_signature = "(self) -> List[float]")]
+    #[pyo3(text_signature = "() -> List[float]")]
     pub fn get_params_full(&self) -> Vec<f32> {
         let p = (&self.mat.clone() / self.mat[(2, 2)]).into_raw_vec();
         vec![p[0] - 1.0, p[3], p[1], p[4] - 1.0, p[2], p[5], p[6], p[7]]
     }
 
     /// Invert the mapping by creating new mapping with inverse matrix.
-    #[pyo3(text_signature = "(self) -> Self")]
+    #[pyo3(text_signature = "() -> Self")]
     pub fn inverse(&self) -> Self {
         Self {
             mat: self.mat.inv().expect("Cannot invert mapping"),
@@ -611,7 +611,7 @@ impl Mapping {
     }
 
     /// Upgrade Type of warp if it's not unknown, i.e: Identity -> Translational -> Affine -> Projective
-    #[pyo3(text_signature = "(self) -> Self")]
+    #[pyo3(text_signature = "() -> Self")]
     pub fn upgrade(&self) -> Self {
         // Warning: This relies on the UNKNOWN type being first in the enum!
         if self.kind == TransformationType::Unknown {
@@ -629,7 +629,7 @@ impl Mapping {
     }
 
     /// Downgrade Type of warp if it's not unknown, i.e: Projective -> Affine -> Translational -> Identity
-    #[pyo3(text_signature = "(self) -> Self")]
+    #[pyo3(text_signature = "() -> Self")]
     pub fn downgrade(&self) -> Self {
         // Warning: This relies on the UNKNOWN type being first in the enum!
         if self.kind == TransformationType::Unknown {
@@ -648,7 +648,7 @@ impl Mapping {
 
     /// Compose with other mappings from left or right. Useful for scaling, offsetting, etc...
     /// Resulting mapping will have be cast to the most general mapping kind of all inputs.
-    #[pyo3(text_signature = "(self, *, lhs: Optional[Self], rhs: Optional[Self]) -> Self")]
+    #[pyo3(text_signature = "(*, lhs: Optional[Self], rhs: Optional[Self]) -> Self")]
     pub fn transform(&self, lhs: Option<Self>, rhs: Option<Self>) -> Self {
         let (lhs_mat, lhs_kind) = lhs.map_or((Array2::eye(3), TransformationType::Unknown), |m| {
             (m.mat, m.kind)
@@ -669,7 +669,7 @@ impl Mapping {
 
     /// Rescale mapping and keep it's kind intact. This enables a mapping to work
     /// for a rescaled image (since the pixel coordinates get changed too).
-    #[pyo3(text_signature = "(self, scale: float) -> Self")]
+    #[pyo3(text_signature = "(scale: float) -> Self")]
     pub fn rescale(&self, scale: f32) -> Self {
         let mut map = self.transform(
             Some(Mapping::scale(1.0 / scale, 1.0 / scale)),
@@ -682,22 +682,24 @@ impl Mapping {
     /// Warp a set of Nx2 points using the mapping.
     #[pyo3(
         name = "warp_points",
-        text_signature = "(self, points: np.ndarray) -> np.ndarray"
+        text_signature = "(points: np.ndarray) -> np.ndarray"
     )]
     pub fn warp_points_py<'py>(
         &'py self,
         py: Python<'py>,
-        points: &Bound<'_, PyArray2<f32>>,
-    ) -> Bound<'_, PyArray2<f32>> {
-        self.warp_points(&points.to_owned().to_owned_array())
-            .to_pyarray_bound(py)
+        points: &Bound<'_, PyAny>,
+    ) -> Result<Bound<'_, PyArray2<f32>>> {
+        Ok(self
+            .warp_points::<f32>(
+                &pyarray_cast::<f32>(points)?
+                    .to_owned_array()
+                    .into_dimensionality::<Ix2>()?,
+            )
+            .to_pyarray_bound(py))
     }
 
     /// Get location of corners of an image of shape `size` once warped with `self`.
-    #[pyo3(
-        name = "corners",
-        text_signature = "(self, size: (int, int)) -> np.ndarray"
-    )]
+    #[pyo3(name = "corners", text_signature = "(size: (int, int)) -> np.ndarray")]
     pub fn corners_py<'py>(
         &'py self,
         py: Python<'py>,
@@ -710,7 +712,7 @@ impl Mapping {
     /// Returns (min x, min y), (max x, max y)
     #[pyo3(
         name = "extent",
-        text_signature = "(self, size: (int, int)) -> (np.ndarray, np.ndarray)"
+        text_signature = "(size: (int, int)) -> (np.ndarray, np.ndarray)"
     )]
     pub fn extent_py<'py>(
         &'py self,
@@ -725,14 +727,14 @@ impl Mapping {
     /// This returns the new buffer along with a mask of which pixels were warped.
     #[pyo3(
         name = "warp_array",
-        text_signature = "(self, data: np.ndarray, out_size: (int, int), \
+        text_signature = "(data: np.ndarray, out_size: (int, int), \
         background: Optional[List[float]]) -> (np.ndarray, np.ndarray)"
     )]
     #[allow(clippy::type_complexity)]
-    pub fn warp_array3_py<'py>(
+    pub fn warp_array_py<'py>(
         &'py self,
         py: Python<'py>,
-        data: &Bound<'_, PyArrayDyn<f32>>,
+        data: &Bound<'_, PyAny>,
         out_size: (usize, usize),
         background: Option<Vec<f32>>,
     ) -> Result<(Bound<'_, PyArray3<f32>>, Bound<'_, PyArray2<bool>>)> {
@@ -755,8 +757,10 @@ impl Mapping {
     }
 
     #[setter(mat)]
-    pub fn mat_setter(&mut self, arr: &Bound<'_, PyArray2<f32>>) -> Result<()> {
-        self.mat = arr.to_owned_array();
+    pub fn mat_setter(&mut self, mat: &Bound<'_, PyAny>) -> Result<()> {
+        self.mat = pyarray_cast::<f32>(mat)?
+            .to_owned_array()
+            .into_dimensionality::<Ix2>()?;
         Ok(())
     }
 

@@ -23,7 +23,7 @@ class Mapping:
     kind: str
 
     @classmethod
-    def from_matrix(cls, mat: np.ndarray, kind: str) -> Self: ...
+    def from_matrix(cls, mat: np.ndarray, kind: TransformationType) -> Self: ...
 
     # Some of these are actually staticmethods that return a class
     # instance, this avoids having to have a separate pyo3 wrapper

@@ -13,7 +13,7 @@ use ndarray::{
 };
 use ndarray_linalg::solve::Inverse;
 use ndarray_ndimage::{correlate, BorderMode};
-use numpy::{Element, PyArrayDyn, PyArrayMethods, ToPyArray};
+use numpy::{Element, PyArrayDyn, PyArrayMethods, PyUntypedArrayMethods, ToPyArray};
 use photoncube2video::{signals::DeferredSignal, transforms::ref_image_to_array3};
 use pyo3::prelude::*;
 use rayon::prelude::*;
@@ -495,20 +495,40 @@ pub fn img_pyramid(
 }
 
 // --------------------------------------------------------------- Python Interface ---------------------------------------------------------------
-pub fn pyarray_to_im_bridge<T: Element>(im: &Bound<'_, PyAny>) -> PyResult<Array3<T>> {
+pub fn pyarray_cast<'py, T: Element>(
+    im: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyArrayDyn<T>>> {
+    // See <https://github.com/PyO3/rust-numpy/issues/246>
     let im = if let Ok(im) = im.downcast::<PyArrayDyn<f64>>() {
-        im.cast::<T>(false)?
+        im.cast::<T>(im.is_fortran_contiguous())?
     } else if let Ok(im) = im.downcast::<PyArrayDyn<f32>>() {
-        im.cast::<T>(false)?
+        im.cast::<T>(im.is_fortran_contiguous())?
+    } else if let Ok(im) = im.downcast::<PyArrayDyn<i64>>() {
+        im.cast::<T>(im.is_fortran_contiguous())?
+    } else if let Ok(im) = im.downcast::<PyArrayDyn<i32>>() {
+        im.cast::<T>(im.is_fortran_contiguous())?
+    } else if let Ok(im) = im.downcast::<PyArrayDyn<i16>>() {
+        im.cast::<T>(im.is_fortran_contiguous())?
+    } else if let Ok(im) = im.downcast::<PyArrayDyn<i8>>() {
+        im.cast::<T>(im.is_fortran_contiguous())?
+    } else if let Ok(im) = im.downcast::<PyArrayDyn<u64>>() {
+        im.cast::<T>(im.is_fortran_contiguous())?
+    } else if let Ok(im) = im.downcast::<PyArrayDyn<u32>>() {
+        im.cast::<T>(im.is_fortran_contiguous())?
+    } else if let Ok(im) = im.downcast::<PyArrayDyn<u16>>() {
+        im.cast::<T>(im.is_fortran_contiguous())?
     } else if let Ok(im) = im.downcast::<PyArrayDyn<u8>>() {
-        im.cast::<T>(false)?
+        im.cast::<T>(im.is_fortran_contiguous())?
+    } else if let Ok(im) = im.downcast::<PyArrayDyn<bool>>() {
+        im.cast::<T>(im.is_fortran_contiguous())?
     } else {
-        return Err(
-            anyhow!("Array dtype not understood, expected float64, float32 or uint8").into(),
-        );
+        return Err(anyhow!("Array dtype not understood").into());
     };
+    Ok(im)
+}
 
-    let im = im.to_owned_array();
+pub fn pyarray_to_im_bridge<T: Element>(im: &Bound<'_, PyAny>) -> PyResult<Array3<T>> {
+    let im = pyarray_cast(im)?.to_owned_array();
     let im = match im.ndim() {
         2 => im.insert_axis(Axis(2)),
         3 => im,

@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "spano"
-requires-python = ">=3.6"
+requires-python = ">=3.8"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
@@ -13,7 +13,8 @@ classifiers = [
 dynamic = ["version"]
 dependencies = [
     "typing_extensions",
-    "numpy"
+    "numpy",
+    "matplotlib"
 ]
 
 [project.optional-dependencies]
@@ -21,7 +22,6 @@ dev = [
     "pytest",
     "black",
     "imageio",
-    "matplotlib",
     "invoke",
     "streamlit",
     "streamlit-image-comparison",
