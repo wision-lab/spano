@@ -64,9 +64,9 @@ class Mapping:
     def warp_array(
         self,
         data: np.ndarray,
-        out_size: Tuple[int, int],
+        out_size: Optional[Tuple[int, int]],
         background: Optional[List[float]],
-    ) -> Tuple[np.ndarray, np.ndarray]: ...
+    ) -> np.ndarray: ...
 
 def iclk(
     im1: np.ndarray,

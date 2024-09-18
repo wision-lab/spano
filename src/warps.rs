@@ -727,23 +727,25 @@ impl Mapping {
     /// This returns the new buffer along with a mask of which pixels were warped.
     #[pyo3(
         name = "warp_array",
-        text_signature = "(data: np.ndarray, out_size: (int, int), \
-        background: Optional[List[float]]) -> (np.ndarray, np.ndarray)"
+        text_signature = "(data: np.ndarray, out_size: Optional[Tuple[int, int]], \
+        background: Optional[List[float]]) -> np.ndarray"
     )]
     #[allow(clippy::type_complexity)]
     pub fn warp_array_py<'py>(
         &'py self,
         py: Python<'py>,
         data: &Bound<'_, PyAny>,
-        out_size: (usize, usize),
+        out_size: Option<(usize, usize)>,
         background: Option<Vec<f32>>,
-    ) -> Result<(Bound<'_, PyArray3<f32>>, Bound<'_, PyArray2<bool>>)> {
-        let (out, valid) = self.warp_array3(
-            &pyarray_to_im_bridge(data)?,
-            out_size,
-            background.map(Array1::from_vec),
+    ) -> Result<Bound<'_, PyArray3<f32>>> {
+        let data = pyarray_to_im_bridge(data)?;
+        let (h, w, c) = data.dim();
+        let (out, _valid) = self.warp_array3(
+            &data,
+            out_size.unwrap_or((h, w)),
+            background.map_or(Some(Array1::zeros(c)), |v| Some(Array1::from_vec(v))),
         );
-        Ok((out.to_pyarray_bound(py), valid.to_pyarray_bound(py)))
+        Ok(out.to_pyarray_bound(py))
     }
 
     #[getter(mat)]
