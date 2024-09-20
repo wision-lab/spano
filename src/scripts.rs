@@ -334,7 +334,7 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
 
                 // Estimate pairwise registration
                 // TODO: Fix this needless copying!
-                println!("({}/{}): Matching...", num_lvls - lvl, num_lvls);
+                print!("({}/{}): Matching... ", num_lvls - lvl, num_lvls);
                 (mappings, _) = pairwise_iclk(
                     &virtual_exposures
                         .clone()
@@ -351,6 +351,7 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
                     true,
                 )?;
                 all_mappings.push(mappings.clone());
+                println!("Done.");
 
                 // Augment mapping type every iteration
                 mappings = mappings.iter().map(|m| m.upgrade()).collect();
