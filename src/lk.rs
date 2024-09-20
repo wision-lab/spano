@@ -10,10 +10,11 @@ use imageproc::{
 use itertools::izip;
 use ndarray::{
     concatenate, par_azip, s, stack, Array, Array1, Array2, Array3, ArrayBase, Axis, NewAxis,
+    RawData,
 };
 use ndarray_linalg::solve::Inverse;
 use ndarray_ndimage::{correlate, BorderMode};
-use numpy::{Element, PyArrayDyn, PyArrayMethods, PyUntypedArrayMethods, ToPyArray};
+use numpy::{Element, Ix3, PyArrayDyn, PyArrayMethods, PyUntypedArrayMethods, ToPyArray};
 use photoncube2video::{signals::DeferredSignal, transforms::ref_image_to_array3};
 use pyo3::prelude::*;
 use rayon::prelude::*;
@@ -25,20 +26,25 @@ use crate::{
 
 /// Compute image gradients using Prewitt operator
 /// Returned (dx, dy) pair as HxWxC arrays.
-pub fn gradients(arr: &Array3<f32>) -> (Array3<f32>, Array3<f32>) {
+pub fn gradients<S>(arr: &ArrayBase<S, Ix3>) -> (Array3<f32>, Array3<f32>)
+where
+    S: RawData<Elem = f32> + ndarray::Data,
+{
     let dx = correlate(
-        arr,
+        &arr.view(),
         &Array3::from_shape_vec((3, 3, 1), HORIZONTAL_PREWITT.to_vec())
             .expect("Filter should contain 9 elements.")
-            .mapv(|v| v as f32),
+            .mapv(|v| v as f32)
+            .view(),
         BorderMode::Reflect,
         0,
     );
     let dy = correlate(
-        arr,
+        &arr.view(),
         &Array3::from_shape_vec((3, 3, 1), VERTICAL_PREWITT.to_vec())
             .expect("Filter should contain 9 elements.")
-            .mapv(|v| v as f32),
+            .mapv(|v| v as f32)
+            .view(),
         BorderMode::Reflect,
         0,
     );
@@ -96,11 +102,11 @@ where
 /// See `iclk_py` for more details.
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
-pub fn iclk_array(
-    im1: &Array3<f32>,
-    im2: &Array3<f32>,
+pub fn iclk_array<S>(
+    im1: &ArrayBase<S, Ix3>,
+    im2: &ArrayBase<S, Ix3>,
     init_mapping: Mapping,
-    im1_weights: Option<&Array3<f32>>,
+    im1_weights: Option<&ArrayBase<S, Ix3>>,
     multi: bool,
     max_iters: Option<u32>,
     min_dimension: Option<usize>,
@@ -108,7 +114,10 @@ pub fn iclk_array(
     stop_early: Option<f32>,
     patience: Option<u32>,
     message: bool,
-) -> Result<(Mapping, HashMap<u32, Vec<Vec<f32>>>)> {
+) -> Result<(Mapping, HashMap<u32, Vec<Vec<f32>>>)>
+where
+    S: RawData<Elem = f32> + ndarray::Data + Sync,
+{
     let mut all_params_history = HashMap::new();
 
     // Early out with single scale matching
@@ -186,16 +195,19 @@ pub fn iclk_array(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn _iclk_single(
-    im1: &Array3<f32>,
-    im2: &Array3<f32>,
+fn _iclk_single<S>(
+    im1: &ArrayBase<S, Ix3>,
+    im2: &ArrayBase<S, Ix3>,
     init_mapping: Mapping,
-    im1_weights: Option<&Array3<f32>>,
+    im1_weights: Option<&ArrayBase<S, Ix3>>,
     max_iters: Option<u32>,
     stop_early: Option<f32>,
     patience: Option<u32>,
     message: Option<&str>,
-) -> Result<(Mapping, Vec<Vec<f32>>)> {
+) -> Result<(Mapping, Vec<Vec<f32>>)>
+where
+    S: RawData<Elem = f32> + ndarray::Data + Sync,
+{
     // Initialize values
     let mut params = init_mapping.inverse().get_params();
     let (h, w, c) = im2.dim();
@@ -205,13 +217,15 @@ fn _iclk_single(
     let points = Array::from_shape_fn((num_points, 2), |(i, j)| if j == 0 { i % w } else { i / w });
     let xs = points.column(0).mapv(|v| v as f32);
     let ys = points.column(1).mapv(|v| v as f32);
+    let mut img1_array_with_weights;
 
     let (img1_array, has_weights) = if let Some(weights) = im1_weights {
         // Concatenate weights as last channel of img1_array if has_weights
-        let img1_array = concatenate(Axis(2), &[im1.view(), weights.view()])?;
-        (&img1_array.as_standard_layout().to_owned(), true)
+        img1_array_with_weights = concatenate(Axis(2), &[im1.view(), weights.view()])?;
+        img1_array_with_weights = img1_array_with_weights.as_standard_layout().to_owned();
+        (img1_array_with_weights.view(), true)
     } else {
-        (im1, false)
+        (im1.view(), false)
     };
     let mut warped_im1gray_pixels = Array2::<f32>::zeros((num_points, c + has_weights as usize));
     let (dx, dy) = gradients(im2);
@@ -360,7 +374,7 @@ fn _iclk_single(
         // TODO: Warp with background or without?
         let mapping = Mapping::from_params(params);
         mapping.warp_array3_into::<f32, _, _, _, _, _>(
-            img1_array,
+            &img1_array,
             &mut warped_im1gray_pixels,
             &mut valid,
             &points,
@@ -383,7 +397,6 @@ fn _iclk_single(
                 if is_valid {
                     let weight = if has_weights { p1[c] } else { 1.0 };
                     let diff = p1.slice(s![..c]).to_owned() - p2.to_owned();
-                    // println!("sd {:?}, diff {:?}", sd.dim(), diff.dim());
                     Some(sd.dot(&diff.slice(s![.., NewAxis])) * weight)
                 } else {
                     None
@@ -420,60 +433,66 @@ fn _iclk_single(
 }
 
 /// Estimate pairwise registration using iclk
+#[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
-pub fn pairwise_iclk(
-    frames: &Vec<GrayImage>,
+pub fn pairwise_iclk<S>(
+    frames: &Vec<ArrayBase<S, Ix3>>,
     init_mappings: &[Mapping],
     multi: bool,
     max_iters: Option<u32>,
+    min_dimension: Option<usize>,
+    max_levels: Option<u32>,
     stop_early: Option<f32>,
     patience: Option<u32>,
     message: bool,
-) -> Result<Vec<Mapping>> {
+) -> Result<(Vec<Mapping>, Vec<HashMap<u32, Vec<Vec<f32>>>>)>
+where
+    S: RawData<Elem = f32> + ndarray::Data + Sync,
+{
     let msg = if message { Some("Matching") } else { None };
     let pbar = get_pbar(frames.len() - 1, msg);
 
     // Iterate over sliding window of pairwise frames (in parallel!)
-    let mappings: Vec<Mapping> = frames
+    let (mappings, hists) = frames
         .par_windows(2)
         .zip(init_mappings)
         .map(|(window, init_mapping)| {
             pbar.inc(1);
-            let img1_array = ref_image_to_array3(&window[0]).mapv(f32::from).to_owned();
-            let img2_array = ref_image_to_array3(&window[1]).mapv(f32::from).to_owned();
-
             iclk_array(
-                &img1_array,
-                &img2_array,
+                &window[0],
+                &window[1],
                 init_mapping.clone(),
                 None,
                 multi,
                 max_iters,
-                None,
-                None,
+                min_dimension,
+                max_levels,
                 stop_early,
                 patience,
                 false,
             )
-            // Drop param_history
-            .map(|(mapping, _)| mapping)
         })
         // Collect to force reorder
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .unzip();
 
     // Return raw pairwise warps (N-1 in total)
     pbar.finish_and_clear();
-    Ok(mappings)
+    Ok((mappings, hists))
 }
 
 /// Given an image, return an image pyramid with the largest size first and halving the size
 /// every time until either the max-levels are reached or the minimum size is reached.
-pub fn img_pyramid(
-    im: &Array3<f32>,
+pub fn img_pyramid<S>(
+    im: &ArrayBase<S, Ix3>,
     min_dimensions: (usize, usize),
     max_levels: u32,
-) -> Vec<Array3<f32>> {
-    let mut stack = vec![im.clone()];
+) -> Vec<Array3<f32>>
+where
+    S: RawData<Elem = f32> + ndarray::Data,
+{
+    let mut stack = vec![im.to_owned()];
     let (min_width, min_height) = min_dimensions;
     let (mut h, mut w, _c) = im.dim();
 
@@ -589,6 +608,46 @@ pub fn iclk_py<'py>(
         &im2,
         init_mapping.unwrap_or(Mapping::from_params(vec![0.0; 8])),
         weights.as_ref(),
+        multi,
+        Some(max_iters),
+        Some(min_dimension),
+        Some(max_levels),
+        Some(stop_early),
+        Some(patience),
+        message,
+    )
+}
+
+/// Estimate pairwise registration using iclk
+#[pyfunction]
+#[pyo3(
+    name = "pairwise_iclk",
+    signature = (frames, init_mappings=None, multi=true, max_iters=250, min_dimension=16, max_levels=8, stop_early=1e-3, patience=10, message=false)
+)]
+#[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
+pub fn pairwise_iclk_py<'py>(
+    py: Python<'py>,
+    frames: Vec<Bound<'py, PyAny>>,
+    init_mappings: Option<Vec<Mapping>>,
+    multi: bool,
+    max_iters: u32,
+    min_dimension: usize,
+    max_levels: u32,
+    stop_early: f32,
+    patience: u32,
+    message: bool,
+) -> Result<(Vec<Mapping>, Vec<HashMap<u32, Vec<Vec<f32>>>>)> {
+    let _defer = DeferredSignal::new(py, "SIGINT")?;
+
+    let frames: Vec<Array3<f32>> = frames
+        .iter()
+        .map(pyarray_to_im_bridge::<f32>)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    pairwise_iclk(
+        &frames,
+        &init_mappings.unwrap_or(vec![Mapping::from_params(vec![0.0; 8]); frames.len() - 1])[..],
         multi,
         Some(max_iters),
         Some(min_dimension),

@@ -12,8 +12,8 @@ use photoncube2video::{
     cube::PhotonCube,
     signals::DeferredSignal,
     transforms::{
-        apply_transforms, array2_to_grayimage, interpolate_where_mask, process_colorspad,
-        unpack_single,
+        apply_transforms, array2_to_grayimage, image_to_array3, interpolate_where_mask,
+        process_colorspad, unpack_single,
     },
 };
 use pyo3::prelude::*;
@@ -220,7 +220,7 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
             let num_ves = (slice.len_of(Axis(0)) / pano_args.burst_size) / pano_args.step;
             let num_frames_per_chunk = pano_args.burst_size / pano_args.granularity;
             let mut mappings: Vec<Mapping> = vec![Mapping::from_params(vec![0.0; 2]); num_ves - 1];
-            let mut virtual_exposures;
+            let mut virtual_exposures: Vec<_>;
             let mut all_mappings = vec![];
 
             // Preload all data at given granularity
@@ -333,11 +333,18 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
                     .collect();
 
                 // Estimate pairwise registration
+                // TODO: Fix this needless copying!
                 println!("({}/{}): Matching...", num_lvls - lvl, num_lvls);
-                mappings = pairwise_iclk(
-                    &virtual_exposures,
+                (mappings, _) = pairwise_iclk(
+                    &virtual_exposures
+                        .clone()
+                        .into_iter()
+                        .map(|ve| image_to_array3(ve).mapv(f32::from))
+                        .collect(),
                     &mappings[..],
                     false,
+                    None,
+                    None,
                     Some(pano_args.lk_args.iterations),
                     Some(pano_args.lk_args.early_stop),
                     Some(pano_args.lk_args.patience),

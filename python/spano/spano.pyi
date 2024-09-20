@@ -81,6 +81,17 @@ def iclk(
     patience: Optional[int] = 10,
     message: bool = False,
 ) -> Tuple[Mapping, LKParams]: ...
+def pairwise_iclk(
+    frames: List[np.ndarray],
+    init_mappings: Optional[List[Mapping]] = None,
+    multi: bool = True,
+    max_iters: Optional[int] = 250,
+    min_dimension: int = 16,
+    max_levels: int = 8,
+    stop_early: Optional[float] = 1e-3,
+    patience: Optional[int] = 10,
+    message: bool = False,
+) -> Tuple[List[Mapping], List[LKParams]]: ...
 def img_pyramid(
     im: np.ndarray, min_dimension: int = 16, max_levels: int = 8
 ) -> Tuple[np.ndarray, ...]: ...

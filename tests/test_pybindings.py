@@ -14,7 +14,7 @@ def test_warp_array():
         import imageio.v3 as iio
     except ImportError:
         import imageio as iio
-    from spano import Mapping
+    from spano import Mapping, TransformationType
 
     src = np.array(iio.imread("tests/source.png")).astype(np.float32)
     dst = np.array(iio.imread("tests/target.png")).astype(np.float32)
@@ -29,13 +29,13 @@ def test_warp_array():
                 ],
                 dtype=np.float32,
             ),
-            kind="Projective",
+            kind=TransformationType.Projective,
         )
         .inverse()
         .rescale(1 / 16)
     )
 
-    warped, _ = map.warp_array(src, (480, 640), [128, 0, 0])
+    warped = map.warp_array(src, (480, 640), [128, 0, 0])
     assert np.allclose(warped, dst, atol=1)
 
 
