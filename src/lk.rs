@@ -14,7 +14,9 @@ use ndarray::{
 };
 use ndarray_linalg::solve::Inverse;
 use ndarray_ndimage::{correlate, BorderMode};
-use numpy::{Element, Ix3, PyArrayDyn, PyArrayMethods, PyUntypedArrayMethods, ToPyArray};
+use numpy::{
+    Element, Ix3, PyArrayDyn, PyArrayMethods, PyUntypedArray, PyUntypedArrayMethods, ToPyArray,
+};
 use photoncube2video::{signals::DeferredSignal, transforms::ref_image_to_array3};
 use pyo3::prelude::*;
 use rayon::prelude::*;
@@ -540,8 +542,10 @@ pub fn pyarray_cast<'py, T: Element>(
         im.cast::<T>(im.is_fortran_contiguous())?
     } else if let Ok(im) = im.downcast::<PyArrayDyn<bool>>() {
         im.cast::<T>(im.is_fortran_contiguous())?
+    } else if let Ok(im) = im.downcast::<PyUntypedArray>() {
+        return Err(anyhow!("Array dtype not understood, expected one of [f64, f32, i64, i32, i16, i8, u64, u32, u16, u8, bool], got {}", im.dtype()).into());
     } else {
-        return Err(anyhow!("Array dtype not understood").into());
+        return Err(anyhow!("Input cannot be understood as valid array.").into());
     };
     Ok(im)
 }
