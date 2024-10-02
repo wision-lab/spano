@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use image::{
     imageops::{resize, FilterType::CatmullRom},
     io::Reader as ImageReader,
@@ -68,25 +68,29 @@ pub fn benchmark_iclk(c: &mut Criterion) {
         .into_rgb8();
     let img_dst = resize(&img_dst, 640 / 4, 480 / 4, CatmullRom);
 
-    c.bench_function("iclk", |b| {
-        b.iter(|| {
-            // No patience, 25 iters, no early-stop.
-            let (_map, _) = iclk(
-                &img_src,
-                &img_dst,
-                Mapping::from_params(vec![0.0; 8]),
-                None,
-                false,
-                Some(25),
-                None,
-                None,
-                Some(1e-12),
-                Some(1),
-                false,
-            )
-            .unwrap();
-        })
-    });
+    let mut group = c.benchmark_group("iclk");
+
+    for iters in [0, 25, 50, 75, 100] {
+        group.bench_with_input(BenchmarkId::from_parameter(iters), &iters, |b, &iters| {
+            b.iter(|| {
+                // No patience, variable iters, no early-stop.
+                let (_map, _) = iclk(
+                    &img_src,
+                    &img_dst,
+                    Mapping::from_params(vec![0.0; 8]),
+                    None,
+                    false,
+                    Some(iters),
+                    None,
+                    None,
+                    Some(1e-12),
+                    Some(1),
+                    false,
+                )
+                .unwrap();
+            })
+        });
+    }
 }
 
 pub fn benchmark_merge_images(c: &mut Criterion) {
