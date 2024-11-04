@@ -29,12 +29,13 @@ use crate::lk::{pyarray_cast, pyarray_to_im_bridge};
 #[pyclass]
 #[derive(Copy, Clone, Debug, Display, ValueEnum, PartialEq, EnumCount, VariantArray)]
 pub enum TransformationType {
-    Unknown,
-    Identity,
-    Translational,
-    Similarity,
-    Affine,
-    Projective,
+    Unknown,       // Transformation type unknown
+    Identity,      // NoOP transform
+    Translational, // Shift in x and y
+    Homothety,     //  + global scaling
+    Similarity,    //  + rotation
+    Affine,        //  + sheer and independent x/y scaling
+    Projective,    // Full control over every corner
 }
 
 impl TransformationType {
@@ -42,6 +43,7 @@ impl TransformationType {
         match &self {
             TransformationType::Identity => 0,
             TransformationType::Translational => 2,
+            TransformationType::Homothety => 3,
             TransformationType::Similarity => 4,
             TransformationType::Affine => 6,
             TransformationType::Projective => 8,
@@ -59,7 +61,7 @@ impl TransformationType {
     }
 
     /// Get transform type from it's string repr, options are:
-    /// "unknown", "identity", "translational", "similarity", "affine", "projective".
+    /// "unknown", "identity", "translational", "homothety", "similarity", "affine", "projective".
     #[staticmethod]
     #[pyo3(name = "from_str", signature = (name))]
     pub fn from_str_py(name: &str) -> PyResult<Self> {
@@ -408,6 +410,12 @@ impl Mapping {
                 TransformationType::Translational,
             ),
 
+            // Homothety
+            [dx, dy, k] => (
+                vec![1.0 + k, 0.0, *dx, 0.0, 1.0 + k, *dy, 0.0, 0.0, 1.0],
+                TransformationType::Homothety,
+            ),
+
             // Similarity
             [dx, dy, a, b] => (
                 vec![1.0 + a, -b, *dx, *b, 1.0 + a, *dy, 0.0, 0.0, 1.0],
@@ -441,7 +449,7 @@ impl Mapping {
     }
 
     /// Return a purely scaling (affine) Mapping.
-    // TODO: M ake use of similarity instead
+    // TODO: Make use of similarity instead
     #[staticmethod]
     #[pyo3(text_signature = "(cls, x: float, y: float) -> Self")]
     pub fn scale(x: f32, y: f32) -> Self {
@@ -595,6 +603,7 @@ impl Mapping {
         match &self.kind {
             TransformationType::Identity => vec![],
             TransformationType::Translational => vec![p[2], p[5]],
+            TransformationType::Homothety => vec![p[2], p[5], p[0] - 1.0],
             TransformationType::Similarity => vec![p[2], p[5], p[0] - 1.0, p[3]],
             TransformationType::Affine => vec![p[0] - 1.0, p[3], p[1], p[4] - 1.0, p[2], p[5]],
             TransformationType::Projective => {
@@ -620,7 +629,7 @@ impl Mapping {
         }
     }
 
-    /// Upgrade Type of warp if it's not unknown, i.e: Identity -> Translational -> Similarity -> Affine -> Projective
+    /// Upgrade Type of warp if it's not unknown, i.e: Identity -> Translational -> Homothety -> Similarity -> Affine -> Projective
     #[pyo3(text_signature = "() -> Self")]
     pub fn upgrade(&self) -> Self {
         // Warning: This relies on the UNKNOWN type being first in the enum!
@@ -638,7 +647,7 @@ impl Mapping {
         )
     }
 
-    /// Downgrade Type of warp if it's not unknown, i.e: Projective -> Affine -> Similarity -> Translational -> Identity
+    /// Downgrade Type of warp if it's not unknown, i.e: Projective -> Affine -> Similarity -> Homothety -> Translational -> Identity
     #[pyo3(text_signature = "() -> Self")]
     pub fn downgrade(&self) -> Self {
         // Warning: This relies on the UNKNOWN type being first in the enum!
@@ -835,6 +844,8 @@ mod test_warps {
         map = map.upgrade();
         assert!(map.kind == TransformationType::Translational);
         map = map.upgrade();
+        assert!(map.kind == TransformationType::Homothety);
+        map = map.upgrade();
         assert!(map.kind == TransformationType::Similarity);
         map = map.upgrade();
         assert!(map.kind == TransformationType::Affine);
@@ -847,6 +858,8 @@ mod test_warps {
         assert!(map.kind == TransformationType::Affine);
         map = map.downgrade();
         assert!(map.kind == TransformationType::Similarity);
+        map = map.downgrade();
+        assert!(map.kind == TransformationType::Homothety);
         map = map.downgrade();
         assert!(map.kind == TransformationType::Translational);
         map = map.downgrade();

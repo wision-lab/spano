@@ -235,42 +235,48 @@ where
     let mut valid = Array1::<bool>::from_elem(num_points, false);
 
     // These can be cached, so we init them before the main loop
-    let (steepest_descent_ic_t, hessian_inv) = match init_mapping.kind {
+    let grad_im2 = stack![
+        Axis(2),
+        dx.view().into_shape((num_points, c))?,
+        dy.view().into_shape((num_points, c))?
+    ]; // (HWxCx2)
+    let ones: Array1<f32> = ArrayBase::ones(num_points);
+    let zeros: Array1<f32> = ArrayBase::zeros(num_points);
+
+    let steepest_descent_ic = match init_mapping.kind {
         TransformationType::Identity => return Ok((Mapping::identity(), vec![vec![]])),
         TransformationType::Translational => {
-            let steepest_descent_ic = stack![
-                Axis(2),
-                dx.view().into_shape((num_points, c))?,
-                dy.view().into_shape((num_points, c))?
-            ]; // (HWxCxN)
+            // Jacobian is the identity, so just return the gradients
+            grad_im2
+        }
+        TransformationType::Homothety => {
+            let mut steepest_descent_ic = Array3::zeros((num_points, c, 3));
 
-            let hessian: Array2<f32> = steepest_descent_ic
-                .axis_iter(Axis(0))
-                .map(|cn| cn.t().dot(&cn))
-                .fold(Array2::<f32>::zeros((num_params, num_params)), |a, b| a + b);
-            let hessian_inv = hessian.inv().unwrap();
+            let jacobian_p = stack![
+                Axis(1),
+                stack![Axis(1), ones, zeros, xs],
+                stack![Axis(1), zeros, ones, ys]
+            ]; // (HWx2xN)
 
-            // (HWxNxC)              (2x2)
-            (steepest_descent_ic.permuted_axes([0, 2, 1]), hessian_inv)
+            // Perform the batch matrix multiply of grad_im2 @ jacobian_p
+            par_azip!(
+                (
+                    mut v in steepest_descent_ic.axis_iter_mut(Axis(0)),
+                    a in grad_im2.axis_iter(Axis(0)),
+                    b in jacobian_p.axis_iter(Axis(0))
+                )
+                {v.assign(&a.dot(&b))}
+            );
+            steepest_descent_ic
         }
         TransformationType::Similarity => {
             let mut steepest_descent_ic = Array3::zeros((num_points, c, 4));
 
-            let jacobian_p = {
-                let ones: Array1<f32> = ArrayBase::ones(num_points);
-                let zeros: Array1<f32> = ArrayBase::zeros(num_points);
-                stack![
-                    Axis(1),
-                    stack![Axis(1), ones, zeros, xs, -ys.clone()],
-                    stack![Axis(1), zeros, ones, ys, xs]
-                ]
-            }; // (HWx2xN)
-
-            let grad_im2 = stack![
-                Axis(2),
-                dx.view().into_shape((num_points, c))?,
-                dy.view().into_shape((num_points, c))?
-            ]; // (HWxCx2)
+            let jacobian_p = stack![
+                Axis(1),
+                stack![Axis(1), ones, zeros, xs, -ys.clone()],
+                stack![Axis(1), zeros, ones, ys, xs]
+            ]; // (HWx2xN)
 
             // Perform the batch matrix multiply of grad_im2 @ jacobian_p
             par_azip!(
@@ -281,34 +287,16 @@ where
                 )
                 {v.assign(&a.dot(&b))}
             );
-
-            let hessian: Array2<f32> = steepest_descent_ic
-                .axis_iter(Axis(0))
-                .map(|cn| cn.t().dot(&cn))
-                .fold(Array2::<f32>::zeros((num_params, num_params)), |a, b| a + b);
-            let hessian_inv = hessian.inv().unwrap();
-
-            // (HWxNxC)            (4x4)
-            (steepest_descent_ic.permuted_axes([0, 2, 1]), hessian_inv)
+            steepest_descent_ic
         }
         TransformationType::Affine => {
             let mut steepest_descent_ic = Array3::zeros((num_points, c, 6));
 
-            let jacobian_p = {
-                let ones: Array1<f32> = ArrayBase::ones(num_points);
-                let zeros: Array1<f32> = ArrayBase::zeros(num_points);
-                stack![
-                    Axis(1),
-                    stack![Axis(1), xs, zeros, ys, zeros, ones, zeros],
-                    stack![Axis(1), zeros, xs, zeros, ys, zeros, ones]
-                ]
-            }; // (HWx2xN)
-
-            let grad_im2 = stack![
-                Axis(2),
-                dx.view().into_shape((num_points, c))?,
-                dy.view().into_shape((num_points, c))?
-            ]; // (HWxCx2)
+            let jacobian_p = stack![
+                Axis(1),
+                stack![Axis(1), xs, zeros, ys, zeros, ones, zeros],
+                stack![Axis(1), zeros, xs, zeros, ys, zeros, ones]
+            ]; // (HWx2xN)
 
             // Perform the batch matrix multiply of grad_im2 @ jacobian_p
             par_azip!(
@@ -319,23 +307,13 @@ where
                 )
                 {v.assign(&a.dot(&b))}
             );
-
-            let hessian: Array2<f32> = steepest_descent_ic
-                .axis_iter(Axis(0))
-                .map(|cn| cn.t().dot(&cn))
-                .fold(Array2::<f32>::zeros((num_params, num_params)), |a, b| a + b);
-            let hessian_inv = hessian.inv().unwrap();
-
-            // (HWxNxC)            (6x6)
-            (steepest_descent_ic.permuted_axes([0, 2, 1]), hessian_inv)
+            steepest_descent_ic
         }
         TransformationType::Projective => {
             let mut steepest_descent_ic = Array3::zeros((num_points, c, 8));
 
             // dW_dp evaluated at (x, p) and p=0 (identity transform)
             let jacobian_p = {
-                let ones: Array1<f32> = ArrayBase::ones(num_points);
-                let zeros: Array1<f32> = ArrayBase::zeros(num_points);
                 let minus_xx: Vec<f32> = xs.iter().map(|i1| -i1 * i1).collect();
                 let minus_yy: Vec<f32> = ys.iter().map(|i1| -i1 * i1).collect();
                 let minus_xy: Vec<f32> = xs.iter().zip(&ys).map(|(i1, i2)| -i1 * i2).collect();
@@ -366,12 +344,6 @@ where
                 ]
             }; // (HWx2xN)
 
-            let grad_im2 = stack![
-                Axis(2),
-                dx.view().into_shape((num_points, c))?,
-                dy.view().into_shape((num_points, c))?
-            ]; // (HWxCx2)
-
             // Perform the batch matrix multiply of grad_im2 @ jacobian_p
             par_azip!(
                 (
@@ -381,15 +353,7 @@ where
                 )
                 {v.assign(&a.dot(&b))}
             );
-
-            let hessian: Array2<f32> = steepest_descent_ic
-                .axis_iter(Axis(0))
-                .map(|cn| cn.t().dot(&cn))
-                .fold(Array2::<f32>::zeros((num_params, num_params)), |a, b| a + b);
-            let hessian_inv = hessian.inv().unwrap();
-
-            // (HWxNxC)            (8x8)
-            (steepest_descent_ic.permuted_axes([0, 2, 1]), hessian_inv)
+            steepest_descent_ic
         }
         TransformationType::Unknown => {
             return Err(anyhow!(
@@ -398,6 +362,12 @@ where
             ))
         }
     };
+    let hessian: Array2<f32> = steepest_descent_ic
+        .axis_iter(Axis(0))
+        .map(|cn| cn.t().dot(&cn))
+        .fold(Array2::<f32>::zeros((num_params, num_params)), |a, b| a + b);
+    let hessian_inv = hessian.inv().unwrap();
+    let steepest_descent_ic_t = steepest_descent_ic.permuted_axes([0, 2, 1]);
 
     // Tracking variables
     let pbar = get_pbar(max_iters.unwrap_or(250) as usize, message);
