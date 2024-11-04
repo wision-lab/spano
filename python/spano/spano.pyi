@@ -11,6 +11,7 @@ class TransformationType(Enum):
     Unknown = auto()
     Identity = auto()
     Translational = auto()
+    Similarity = auto()
     Affine = auto()
     Projective = auto()
 

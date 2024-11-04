@@ -32,6 +32,7 @@ pub enum TransformationType {
     Unknown,
     Identity,
     Translational,
+    Similarity,
     Affine,
     Projective,
 }
@@ -41,6 +42,7 @@ impl TransformationType {
         match &self {
             TransformationType::Identity => 0,
             TransformationType::Translational => 2,
+            TransformationType::Similarity => 4,
             TransformationType::Affine => 6,
             TransformationType::Projective => 8,
             TransformationType::Unknown => 0,
@@ -57,7 +59,7 @@ impl TransformationType {
     }
 
     /// Get transform type from it's string repr, options are:
-    /// "unknown", "identity", "translational", "affine", "projective".
+    /// "unknown", "identity", "translational", "similarity", "affine", "projective".
     #[staticmethod]
     #[pyo3(name = "from_str", signature = (name))]
     pub fn from_str_py(name: &str) -> PyResult<Self> {
@@ -406,6 +408,12 @@ impl Mapping {
                 TransformationType::Translational,
             ),
 
+            // Similarity
+            [dx, dy, a, b] => (
+                vec![1.0 + a, -b, *dx, *b, 1.0 + a, *dy, 0.0, 0.0, 1.0],
+                TransformationType::Similarity,
+            ),
+
             // Affine Transforms
             [p1, p2, p3, p4, p5, p6] => (
                 vec![*p1 + 1.0, *p3, *p5, *p2, *p4 + 1.0, *p6, 0.0, 0.0, 1.0],
@@ -433,6 +441,7 @@ impl Mapping {
     }
 
     /// Return a purely scaling (affine) Mapping.
+    // TODO: M ake use of similarity instead
     #[staticmethod]
     #[pyo3(text_signature = "(cls, x: float, y: float) -> Self")]
     pub fn scale(x: f32, y: f32) -> Self {
@@ -586,6 +595,7 @@ impl Mapping {
         match &self.kind {
             TransformationType::Identity => vec![],
             TransformationType::Translational => vec![p[2], p[5]],
+            TransformationType::Similarity => vec![p[2], p[5], p[0] - 1.0, p[3]],
             TransformationType::Affine => vec![p[0] - 1.0, p[3], p[1], p[4] - 1.0, p[2], p[5]],
             TransformationType::Projective => {
                 vec![p[0] - 1.0, p[3], p[1], p[4] - 1.0, p[2], p[5], p[6], p[7]]
@@ -610,7 +620,7 @@ impl Mapping {
         }
     }
 
-    /// Upgrade Type of warp if it's not unknown, i.e: Identity -> Translational -> Affine -> Projective
+    /// Upgrade Type of warp if it's not unknown, i.e: Identity -> Translational -> Similarity -> Affine -> Projective
     #[pyo3(text_signature = "() -> Self")]
     pub fn upgrade(&self) -> Self {
         // Warning: This relies on the UNKNOWN type being first in the enum!
@@ -628,7 +638,7 @@ impl Mapping {
         )
     }
 
-    /// Downgrade Type of warp if it's not unknown, i.e: Projective -> Affine -> Translational -> Identity
+    /// Downgrade Type of warp if it's not unknown, i.e: Projective -> Affine -> Similarity -> Translational -> Identity
     #[pyo3(text_signature = "() -> Self")]
     pub fn downgrade(&self) -> Self {
         // Warning: This relies on the UNKNOWN type being first in the enum!
@@ -825,6 +835,8 @@ mod test_warps {
         map = map.upgrade();
         assert!(map.kind == TransformationType::Translational);
         map = map.upgrade();
+        assert!(map.kind == TransformationType::Similarity);
+        map = map.upgrade();
         assert!(map.kind == TransformationType::Affine);
         map = map.upgrade();
         assert!(map.kind == TransformationType::Projective);
@@ -833,6 +845,8 @@ mod test_warps {
 
         map = map.downgrade();
         assert!(map.kind == TransformationType::Affine);
+        map = map.downgrade();
+        assert!(map.kind == TransformationType::Similarity);
         map = map.downgrade();
         assert!(map.kind == TransformationType::Translational);
         map = map.downgrade();

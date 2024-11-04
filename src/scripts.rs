@@ -96,7 +96,7 @@ fn match_imgpair(global_args: Cli, lk_args: LKArgs) -> Result<()> {
         iclk(
             &img1,
             &img2,
-            Mapping::from_params(vec![0.0; 8]),
+            Mapping::from_params(vec![0.0; 4]),
             weights.as_ref(),
             lk_args.multi,
             Some(lk_args.iterations),

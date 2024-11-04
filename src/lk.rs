@@ -253,6 +253,44 @@ where
             // (HWxNxC)              (2x2)
             (steepest_descent_ic.permuted_axes([0, 2, 1]), hessian_inv)
         }
+        TransformationType::Similarity => {
+            let mut steepest_descent_ic = Array3::zeros((num_points, c, 4));
+
+            let jacobian_p = {
+                let ones: Array1<f32> = ArrayBase::ones(num_points);
+                let zeros: Array1<f32> = ArrayBase::zeros(num_points);
+                stack![
+                    Axis(1),
+                    stack![Axis(1), ones, zeros, xs, -ys.clone()],
+                    stack![Axis(1), zeros, ones, ys, xs]
+                ]
+            }; // (HWx2xN)
+
+            let grad_im2 = stack![
+                Axis(2),
+                dx.view().into_shape((num_points, c))?,
+                dy.view().into_shape((num_points, c))?
+            ]; // (HWxCx2)
+
+            // Perform the batch matrix multiply of grad_im2 @ jacobian_p
+            par_azip!(
+                (
+                    mut v in steepest_descent_ic.axis_iter_mut(Axis(0)),
+                    a in grad_im2.axis_iter(Axis(0)),
+                    b in jacobian_p.axis_iter(Axis(0))
+                )
+                {v.assign(&a.dot(&b))}
+            );
+
+            let hessian: Array2<f32> = steepest_descent_ic
+                .axis_iter(Axis(0))
+                .map(|cn| cn.t().dot(&cn))
+                .fold(Array2::<f32>::zeros((num_params, num_params)), |a, b| a + b);
+            let hessian_inv = hessian.inv().unwrap();
+
+            // (HWxNxC)            (4x4)
+            (steepest_descent_ic.permuted_axes([0, 2, 1]), hessian_inv)
+        }
         TransformationType::Affine => {
             let mut steepest_descent_ic = Array3::zeros((num_points, c, 6));
 
@@ -279,7 +317,6 @@ where
                     a in grad_im2.axis_iter(Axis(0)),
                     b in jacobian_p.axis_iter(Axis(0))
                 )
-                // {v.assign(&a.dot(&b).into_shape(params.len()).unwrap())}
                 {v.assign(&a.dot(&b))}
             );
 
@@ -354,7 +391,7 @@ where
             // (HWxNxC)            (8x8)
             (steepest_descent_ic.permuted_axes([0, 2, 1]), hessian_inv)
         }
-        _ => {
+        TransformationType::Unknown => {
             return Err(anyhow!(
                 "Mapping type {:?} not supported!",
                 init_mapping.kind
