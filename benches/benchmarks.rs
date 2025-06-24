@@ -115,7 +115,7 @@ pub fn benchmark_merge_images(c: &mut Criterion) {
         TransformationType::Projective,
     )
     .rescale(1.0 / 16.0);
-    let maps = [Mapping::identity(), map];
+    let maps = [Mapping::identity(None), map];
 
     c.bench_function("merge_images", |b| {
         b.iter(|| {

@@ -336,11 +336,12 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
                 // TODO: Fix this needless copying!
                 print!("({}/{}): Matching... ", num_lvls - lvl, num_lvls);
                 (mappings, _) = pairwise_iclk(
-                    &virtual_exposures
+                    virtual_exposures
                         .clone()
                         .into_iter()
                         .map(|ve| image_to_array3(ve).mapv(f32::from))
-                        .collect(),
+                        .collect::<Vec<_>>()
+                        .as_slice(),
                     &mappings[..],
                     false,
                     None,
@@ -421,7 +422,7 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
                 let interpd_maps: Vec<_> = interpd_maps
                     .into_iter()
                     .step_by(num_frames_per_chunk)
-                    .flat_map(|n| std::iter::repeat(n).take(num_frames_per_chunk))
+                    .flat_map(|n| std::iter::repeat_n(n, num_frames_per_chunk))
                     .collect();
 
                 // Create baseline pano and save

@@ -465,9 +465,10 @@ impl Mapping {
 
     /// Return an identity Mapping.
     #[staticmethod]
-    #[pyo3(text_signature = "() -> Self")]
-    pub fn identity() -> Self {
-        Self::from_params(vec![])
+    #[pyo3(text_signature = "(kind: Optional[TransformationType]) -> Self")]
+    pub fn identity(kind: Option<TransformationType>) -> Self {
+        let mat = Array2::eye(3);
+        Self::from_matrix(mat, kind.unwrap_or(TransformationType::Identity))
     }
 
     /// Get maximum extent of a collection of warps and theirs sizes.
@@ -549,8 +550,8 @@ impl Mapping {
     pub fn accumulate(mappings: Vec<Self>) -> Vec<Self> {
         // TODO: maybe impl Copy to minimize the clones here...
         // TODO: Can we avoid the above collect and cumulatively compose in parallel?
-        chain([Mapping::identity()], mappings)
-            .scan(Mapping::identity(), |acc, x| {
+        chain([Mapping::identity(None)], mappings)
+            .scan(Mapping::identity(None), |acc, x| {
                 *acc = acc.transform(None, Some(x.clone()));
                 Some(acc.clone())
             })
@@ -707,7 +708,7 @@ impl Mapping {
         &'py self,
         py: Python<'py>,
         points: &Bound<'_, PyAny>,
-    ) -> Result<Bound<'_, PyArray2<f32>>> {
+    ) -> Result<Bound<'py, PyArray2<f32>>> {
         Ok(self
             .warp_points::<f32>(
                 &pyarray_cast::<f32>(points)?
@@ -723,7 +724,7 @@ impl Mapping {
         &'py self,
         py: Python<'py>,
         size: (usize, usize),
-    ) -> Bound<'_, PyArray2<f32>> {
+    ) -> Bound<'py, PyArray2<f32>> {
         self.corners(size).to_pyarray_bound(py)
     }
 
@@ -737,7 +738,7 @@ impl Mapping {
         &'py self,
         py: Python<'py>,
         size: (usize, usize),
-    ) -> (Bound<'_, PyArray1<f32>>, Bound<'_, PyArray1<f32>>) {
+    ) -> (Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<f32>>) {
         let (min, max) = self.extent(size);
         (min.to_pyarray_bound(py), max.to_pyarray_bound(py))
     }
@@ -756,7 +757,7 @@ impl Mapping {
         data: &Bound<'_, PyAny>,
         out_size: Option<(usize, usize)>,
         background: Option<Vec<f32>>,
-    ) -> Result<Bound<'_, PyArray3<f32>>> {
+    ) -> Result<Bound<'py, PyArray3<f32>>> {
         let data = pyarray_to_im_bridge(data)?;
         let (h, w, c) = data.dim();
         let (out, _valid) = self.warp_array3(
@@ -838,7 +839,7 @@ mod test_warps {
         assert!(map.upgrade().kind == TransformationType::Unknown);
         assert!(map.downgrade().kind == TransformationType::Unknown);
 
-        let mut map = Mapping::identity();
+        let mut map = Mapping::identity(None);
         assert!(map.kind == TransformationType::Identity);
 
         map = map.upgrade();

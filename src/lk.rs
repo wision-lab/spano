@@ -244,7 +244,7 @@ where
     let zeros: Array1<f32> = ArrayBase::zeros(num_points);
 
     let steepest_descent_ic = match init_mapping.kind {
-        TransformationType::Identity => return Ok((Mapping::identity(), vec![vec![]])),
+        TransformationType::Identity => return Ok((Mapping::identity(None), vec![vec![]])),
         TransformationType::Translational => {
             // Jacobian is the identity, so just return the gradients
             grad_im2
@@ -445,7 +445,7 @@ where
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
 pub fn pairwise_iclk<S>(
-    frames: &Vec<ArrayBase<S, Ix3>>,
+    frames: &[ArrayBase<S, Ix3>],
     init_mappings: &[Mapping],
     multi: bool,
     max_iters: Option<u32>,

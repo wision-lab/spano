@@ -149,7 +149,7 @@ where
     let (h, w, c) = frame_size;
 
     let ((canvas_h, canvas_w), offset) = if let Some(val) = size {
-        (val, Mapping::identity())
+        (val, Mapping::identity(None))
     } else {
         let (extent, offset) = Mapping::maximum_extent(mappings, &[(w, h)]);
         let (canvas_w, canvas_h) = extent
