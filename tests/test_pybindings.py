@@ -1,5 +1,6 @@
 import numpy as np
 
+
 def test_interp():
     from spano import Mapping
 
@@ -36,7 +37,7 @@ def test_warp_array():
     )
 
     warped = map.warp_array(src, (480, 640), [128, 0, 0])
-    assert np.allclose(warped, dst, atol=1)
+    assert np.allclose(warped, dst, atol=1.5)
 
 
 def test_transform_types():

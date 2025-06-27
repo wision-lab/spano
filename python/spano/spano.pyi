@@ -1,9 +1,10 @@
+from __future__ import annotations
+
 from os import PathLike
-from typing import List, Tuple, Dict, Optional
-from typing_extensions import Self
+from typing_extensions import List, Tuple, Dict, Self
 from enum import Enum, auto
 
-import numpy as np
+import numpy.typing as npt
 
 LKParams = Dict[int, List[List[float]]]
 
@@ -16,16 +17,17 @@ class TransformationType(Enum):
     Affine = auto()
     Projective = auto()
 
+    @classmethod
+    def from_str(cls, name: str) -> Self: ...
     def num_params(self: Self) -> int: ...
     def to_str(self: Self) -> str: ...
-    def from_str(name: str) -> Self: ...
 
 class Mapping:
-    mat: np.ndarray
+    mat: npt.NDArray
     kind: str
 
     @classmethod
-    def from_matrix(cls, mat: np.ndarray, kind: TransformationType) -> Self: ...
+    def from_matrix(cls, mat: npt.NDArray, kind: TransformationType) -> Self: ...
 
     # Some of these are actually staticmethods that return a class
     # instance, this avoids having to have a separate pyo3 wrapper
@@ -39,71 +41,83 @@ class Mapping:
     def identity(cls) -> Self: ...
     @staticmethod
     def maximum_extent(
-        maps: List[Self], sizes: List[Tuple[int, int]]
-    ) -> Tuple[np.ndarray, Self]: ...
+        maps: List[Mapping], sizes: List[Tuple[int, int]]
+    ) -> Tuple[npt.NDArray, Mapping]: ...
     @staticmethod
-    def interpolate_scalar(ts: List[float], maps: List[Self], query: float) -> Self: ...
+    def interpolate_scalar(
+        ts: List[float], maps: List[Mapping], query: float
+    ) -> Mapping: ...
     @staticmethod
     def interpolate_array(
-        ts: List[float], maps: List[Self], query: List[float]
-    ) -> List[Self]: ...
+        ts: List[float], maps: List[Mapping], query: List[float]
+    ) -> List[Mapping]: ...
     @staticmethod
-    def accumulate(mappings: List[Self]) -> List[Self]: ...
+    def accumulate(mappings: List[Mapping]) -> List[Mapping]: ...
     @staticmethod
-    def with_respect_to(mappings: List[Self], wrt_map: Self) -> List[Self]: ...
+    def with_respect_to(mappings: List[Mapping], wrt_map: Mapping) -> List[Mapping]: ...
     @staticmethod
-    def with_respect_to_idx(mappings: List[Self], wrt_idx: float) -> List[Self]: ...
+    def with_respect_to_idx(
+        mappings: List[Mapping], wrt_idx: float
+    ) -> List[Mapping]: ...
     @staticmethod
-    def accumulate_wrt_idx(mappings: List[Self], wrt_idx: float) -> List[Self]: ...
+    def accumulate_wrt_idx(
+        mappings: List[Mapping], wrt_idx: float
+    ) -> List[Mapping]: ...
+    @staticmethod
+    def merge_arrays(
+        mappings: List[Mapping],
+        frames: List[npt.NDArray],
+        size: Tuple[int, int] | None,
+    ) -> npt.NDArray: ...
     def get_params(self) -> List[float]: ...
     def get_params_full(self) -> List[float]: ...
     def inverse(self) -> Self: ...
-    def transform(self, *, lhs: Optional[Self], rhs: Optional[Self]) -> Self: ...
+    def transform(self, *, lhs: Self | None, rhs: Self | None) -> Self: ...
     def rescale(self, scale: float) -> Self: ...
-    def warp_points(self, points: np.ndarray) -> np.ndarray: ...
-    def corners(self, size: Tuple[int, int]) -> np.ndarray: ...
-    def extent(self, size: Tuple[int, int]) -> Tuple[np.ndarray, np.ndarray]: ...
+    def warp_points(self, points: npt.NDArray) -> npt.NDArray: ...
+    def corners(self, size: Tuple[int, int]) -> npt.NDArray: ...
+    def extent(self, size: Tuple[int, int]) -> Tuple[npt.NDArray, npt.NDArray]: ...
     def warp_array(
         self,
-        data: np.ndarray,
-        out_size: Optional[Tuple[int, int]],
-        background: Optional[List[float]],
-    ) -> np.ndarray: ...
+        data: npt.NDArray,
+        out_size: Tuple[int, int] | None,
+        background: List[float] | None,
+    ) -> npt.NDArray: ...
 
 def iclk(
-    im1: np.ndarray,
-    im2: np.ndarray,
-    init_mapping: Optional[Mapping] = None,
-    im1_weights: Optional[np.ndarray] = None,
+    im1: npt.NDArray,
+    im2: npt.NDArray,
+    init_mapping: Mapping | None = None,
+    im1_weights: npt.NDArray | None = None,
     multi: bool = True,
-    max_iters: Optional[int] = 250,
+    max_iters: int | None = 250,
     min_dimension: int = 16,
     max_levels: int = 8,
-    stop_early: Optional[float] = 1e-3,
-    patience: Optional[int] = 10,
+    stop_early: float | None = 1e-3,
+    patience: int | None = 10,
     message: bool = False,
 ) -> Tuple[Mapping, LKParams]: ...
 def pairwise_iclk(
-    frames: List[np.ndarray],
-    init_mappings: Optional[List[Mapping]] = None,
+    frames: List[npt.NDArray],
+    init_mappings: List[Mapping] | None = None,
     multi: bool = True,
-    max_iters: Optional[int] = 250,
+    max_iters: int | None = 250,
     min_dimension: int = 16,
     max_levels: int = 8,
-    stop_early: Optional[float] = 1e-3,
-    patience: Optional[int] = 10,
+    stop_early: float | None = 1e-3,
+    patience: int | None = 10,
     message: bool = False,
 ) -> Tuple[List[Mapping], List[LKParams]]: ...
 def img_pyramid(
-    im: np.ndarray, min_dimension: int = 16, max_levels: int = 8
-) -> Tuple[np.ndarray, ...]: ...
+    im: npt.NDArray, min_dimension: int = 16, max_levels: int = 8
+) -> Tuple[npt.NDArray, ...]: ...
 def animate_warp(
-    img: np.ndarray,
+    img: npt.NDArray,
     params_history: LKParams,
-    img_dir: Optional[PathLike] = None,
+    img_dir: str | PathLike | None = None,
     scale: float = 1.0,
     fps: int = 25,
     step: int = 100,
-    out_path: Optional[PathLike] = None,
-    message: Optional[str] = None,
+    out_path: str | PathLike | None = None,
+    message: str | None = None,
 ) -> None: ...

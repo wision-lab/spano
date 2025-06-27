@@ -13,7 +13,7 @@ use image::{
 use imageproc::definitions::{Clamp, Image};
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
-use photoncube2video::{
+use photoncube::{
     ffmpeg::{ensure_ffmpeg, make_video},
     signals::DeferredSignal,
     transforms::{annotate, array3_to_image, gray_to_rgbimage},

@@ -11,11 +11,11 @@ use ndarray::{
     array, concatenate, s, stack, Array, Array1, Array2, Array3, ArrayBase, Axis, Dimension, Ix3,
     RawData,
 };
-use ndarray_interp::interp1d::{CubicSpline, Interp1DBuilder, Linear};
+use ndarray_interp::interp1d::{cubic_spline::CubicSpline, Interp1DBuilder, Linear};
 use ndarray_linalg::solve::Inverse;
 use num_traits::AsPrimitive;
 use numpy::{Ix2, PyArray1, PyArray2, PyArray3, PyArrayMethods, ToPyArray};
-use photoncube2video::transforms::{array3_to_image, ref_image_to_array3};
+use photoncube::transforms::{array3_to_image, ref_image_to_array3};
 use pyo3::{prelude::*, types::PyType};
 use rayon::{
     iter::{IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator},
@@ -26,7 +26,7 @@ use strum_macros::Display;
 
 use crate::lk::{pyarray_cast, pyarray_to_im_bridge};
 
-#[pyclass]
+#[pyclass(eq, eq_int)]
 #[derive(Copy, Clone, Debug, Display, ValueEnum, PartialEq, EnumCount, VariantArray)]
 pub enum TransformationType {
     Unknown,       // Transformation type unknown
@@ -41,13 +41,13 @@ pub enum TransformationType {
 impl TransformationType {
     pub fn num_params(&self) -> usize {
         match &self {
+            TransformationType::Unknown => 0,
             TransformationType::Identity => 0,
             TransformationType::Translational => 2,
             TransformationType::Homothety => 3,
             TransformationType::Similarity => 4,
             TransformationType::Affine => 6,
             TransformationType::Projective => 8,
-            TransformationType::Unknown => 0,
         }
     }
 }
@@ -402,7 +402,10 @@ impl Mapping {
     pub fn from_params(params: Vec<f32>) -> Self {
         let (full_params, kind) = match &params[..] {
             // Identity
-            [] => (Array2::eye(3).into_raw_vec(), TransformationType::Identity),
+            [] => (
+                vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                TransformationType::Identity,
+            ),
 
             // Translations
             [dx, dy] => (
@@ -465,7 +468,7 @@ impl Mapping {
 
     /// Return an identity Mapping.
     #[staticmethod]
-    #[pyo3(text_signature = "(kind: Optional[TransformationType]) -> Self")]
+    #[pyo3(signature = (kind=None))]
     pub fn identity(kind: Option<TransformationType>) -> Self {
         let mat = Array2::eye(3);
         Self::from_matrix(mat, kind.unwrap_or(TransformationType::Identity))
@@ -488,7 +491,7 @@ impl Mapping {
         sizes: Vec<(usize, usize)>,
     ) -> (Bound<'_, PyArray1<f32>>, Self) {
         let (extent, offset) = Self::maximum_extent(&maps, &sizes);
-        (extent.to_pyarray_bound(py), offset)
+        (extent.to_pyarray(py), offset)
     }
 
     /// Interpolate a list of Mappings and query a single point.
@@ -600,7 +603,7 @@ impl Mapping {
     /// Get minimum number of parameters that describe the Mapping.
     #[pyo3(text_signature = "() -> List[float]")]
     pub fn get_params(&self) -> Vec<f32> {
-        let p = (&self.mat.clone() / self.mat[(2, 2)]).into_raw_vec();
+        let (p, _) = (&self.mat.clone() / self.mat[(2, 2)]).into_raw_vec_and_offset();
         match &self.kind {
             TransformationType::Identity => vec![],
             TransformationType::Translational => vec![p[2], p[5]],
@@ -617,7 +620,7 @@ impl Mapping {
     /// Get all parameters of the Mapping (over parameterized for everything but projective warp).
     #[pyo3(text_signature = "() -> List[float]")]
     pub fn get_params_full(&self) -> Vec<f32> {
-        let p = (&self.mat.clone() / self.mat[(2, 2)]).into_raw_vec();
+        let (p, _) = (&self.mat.clone() / self.mat[(2, 2)]).into_raw_vec_and_offset();
         vec![p[0] - 1.0, p[3], p[1], p[4] - 1.0, p[2], p[5], p[6], p[7]]
     }
 
@@ -715,7 +718,7 @@ impl Mapping {
                     .to_owned_array()
                     .into_dimensionality::<Ix2>()?,
             )
-            .to_pyarray_bound(py))
+            .to_pyarray(py))
     }
 
     /// Get location of corners of an image of shape `size` once warped with `self`.
@@ -725,7 +728,7 @@ impl Mapping {
         py: Python<'py>,
         size: (usize, usize),
     ) -> Bound<'py, PyArray2<f32>> {
-        self.corners(size).to_pyarray_bound(py)
+        self.corners(size).to_pyarray(py)
     }
 
     /// Equivalent to getting minimum and maximum x/y coordinates of `corners`.
@@ -740,7 +743,7 @@ impl Mapping {
         size: (usize, usize),
     ) -> (Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<f32>>) {
         let (min, max) = self.extent(size);
-        (min.to_pyarray_bound(py), max.to_pyarray_bound(py))
+        (min.to_pyarray(py), max.to_pyarray(py))
     }
 
     /// Warp array using mapping into a new buffer of shape `out_size`.
@@ -765,17 +768,17 @@ impl Mapping {
             out_size.unwrap_or((h, w)),
             background.map_or(Some(Array1::zeros(c)), |v| Some(Array1::from_vec(v))),
         );
-        Ok(out.to_pyarray_bound(py))
+        Ok(out.to_pyarray(py))
     }
 
     #[getter(mat)]
     pub fn mat_getter<'py>(&'py self, py: Python<'py>) -> Result<Py<PyAny>> {
         // See: https://github.com/PyO3/rust-numpy/issues/408
-        let py_arr = self.mat.to_pyarray_bound(py).to_owned().into_py(py);
+        let py_arr = self.mat.to_pyarray(py).to_owned();
         py_arr
-            .getattr(py, "setflags")?
-            .call1(py, (false, None::<bool>, None::<bool>))?;
-        Ok(py_arr)
+            .getattr("setflags")?
+            .call1((false, None::<bool>, None::<bool>))?;
+        Ok(py_arr.into())
     }
 
     #[setter(mat)]

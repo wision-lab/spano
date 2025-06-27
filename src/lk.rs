@@ -17,7 +17,7 @@ use ndarray_ndimage::{correlate, BorderMode};
 use numpy::{
     Element, Ix3, PyArrayDyn, PyArrayMethods, PyUntypedArray, PyUntypedArrayMethods, ToPyArray,
 };
-use photoncube2video::{signals::DeferredSignal, transforms::ref_image_to_array3};
+use photoncube::{signals::DeferredSignal, transforms::ref_image_to_array3};
 use pyo3::prelude::*;
 use rayon::prelude::*;
 
@@ -231,14 +231,14 @@ where
     };
     let mut warped_im1gray_pixels = Array2::<f32>::zeros((num_points, c + has_weights as usize));
     let (dx, dy) = gradients(im2);
-    let img2_pixels = im2.view().into_shape((num_points, c))?;
+    let img2_pixels = im2.view().into_shape_with_order((num_points, c))?;
     let mut valid = Array1::<bool>::from_elem(num_points, false);
 
     // These can be cached, so we init them before the main loop
     let grad_im2 = stack![
         Axis(2),
-        dx.view().into_shape((num_points, c))?,
-        dy.view().into_shape((num_points, c))?
+        dx.view().into_shape_with_order((num_points, c))?,
+        dy.view().into_shape_with_order((num_points, c))?
     ]; // (HWxCx2)
     let ones: Array1<f32> = ArrayBase::ones(num_points);
     let zeros: Array1<f32> = ArrayBase::zeros(num_points);
@@ -414,7 +414,7 @@ where
             // Sum them together, here we use reduce with a base value of zero
             .reduce(|| Array2::<f32>::zeros((num_params, 1)), |a, b| a + b);
         let dp: Array2<f32> = hessian_inv.dot(&sd_param_updates);
-        let mapping_dp = Mapping::from_params(dp.clone().into_raw_vec());
+        let mapping_dp = Mapping::from_params(dp.clone().into_raw_vec_and_offset().0);
 
         // Update the parameters
         params = Mapping::from_matrix(mapping.mat.dot(&mapping_dp.mat.inv()?), init_mapping.kind)
@@ -690,6 +690,6 @@ pub fn img_pyramid_py<'py>(
         max_levels,
     )
     .iter()
-    .map(|a| a.to_pyarray_bound(py).to_owned().into_py(py))
+    .map(|a| a.to_pyarray(py).to_owned().into())
     .collect())
 }

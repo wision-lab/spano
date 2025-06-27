@@ -3,12 +3,11 @@ use std::{env, fs::write, path::Path};
 use anyhow::{anyhow, Result};
 use image::{
     imageops::{grayscale, resize, FilterType},
-    io::Reader as ImageReader,
-    GrayImage, Rgb,
+    GrayImage, ImageReader, Rgb,
 };
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use ndarray::{Array1, Axis, Slice};
-use photoncube2video::{
+use photoncube::{
     cube::PhotonCube,
     signals::DeferredSignal,
     transforms::{

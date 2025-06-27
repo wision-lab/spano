@@ -11,6 +11,7 @@ pub mod warps;
 use pyo3::prelude::*;
 
 use crate::{
+    blend::merge_arrays_py,
     lk::{iclk_py, img_pyramid_py, pairwise_iclk_py},
     scripts::cli_entrypoint,
     utils::animate_warp_py,
@@ -29,5 +30,6 @@ fn spano(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<TransformationType>()?;
 
     m.add_wrapped(wrap_pyfunction!(animate_warp_py))?;
+    m.add_wrapped(wrap_pyfunction!(merge_arrays_py))?;
     Ok(())
 }

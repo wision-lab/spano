@@ -1,10 +1,10 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use image::{
     imageops::{resize, FilterType::CatmullRom},
-    io::Reader as ImageReader,
+    ImageReader,
 };
 use ndarray::{array, Array3};
-use photoncube2video::transforms::image_to_array3;
+use photoncube::transforms::image_to_array3;
 #[cfg(target_os = "linux")]
 use pprof::criterion::{Output, PProfProfiler};
 use spano::{

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 pub use clap::Parser;
 use clap::{Args, Subcommand};
-use photoncube2video::transforms::Transform;
+use photoncube::transforms::Transform;
 
 fn validate_normalized(p: &str) -> Result<f32, String> {
     let value = p.parse::<f32>().map_err(|_| "Invalid value")?;

@@ -43,9 +43,9 @@ spano lk -i assets/skyline1.png -i assets/skyline2.png -o out-multi.png --downsc
 
 ### Panorama from photoncube
 
-You can create a panorama using a photoncube (in npy format) as well. Using [this photoncube](https://drive.google.com/file/d/1rTTD6wBLveElNyb_xNtfgPw3trQCY9tN/view?usp=sharing) and the appropriate inpainting and color filter arrays [found here](https://github.com/WISION-Lab/photoncube2video) you can create a panorama and the stabilized videos at each level like so:
+You can create a panorama using a photoncube (in npy format) as well. Using [this photoncube](https://drive.google.com/file/d/1rTTD6wBLveElNyb_xNtfgPw3trQCY9tN/view?usp=sharing) and the appropriate inpainting and color filter arrays [found here](https://github.com/WISION-Lab/photoncube) you can create a panorama and the stabilized videos at each level like so:
 ```shell
-spano pano -i binary.npy -s 0 -e 64000 -t rot90 -t flip-ud --colorspad-fix --granularity=32 --viz-step=10 --early-stop=1e-4 --viz-output=out.mp4 --inpaint-path ../photoncube2video/colorspad_inpaint_mask.npy --cfa-path ../photoncube2video/rgbw_oh_bn_color_ss2_corrected.png
+spano pano -i binary.npy -s 0 -e 64000 -t rot90 -t flip-ud --colorspad-fix --granularity=32 --viz-step=10 --early-stop=1e-4 --viz-output=out.mp4 --inpaint-path ../photoncube/colorspad_inpaint_mask.npy --cfa-path ../photoncube/rgbw_oh_bn_color_ss2_corrected.png
 ```
 On a 5600G, this takes about 1min 20s. 
 

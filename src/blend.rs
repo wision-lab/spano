@@ -7,13 +7,15 @@ use ndarray::{
     azip, concatenate, s, stack, Array, Array1, Array2, Array3, ArrayBase, Axis, Ix3, NewAxis,
     RawData,
 };
-use photoncube2video::transforms::{array3_to_image, ref_image_to_array3};
+use numpy::{PyArray3, ToPyArray};
+use photoncube::transforms::{array3_to_image, ref_image_to_array3};
+use pyo3::{prelude::*, types::PyList};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-use crate::{utils::get_pbar, warps::Mapping};
+use crate::{lk::pyarray_to_im_bridge, utils::get_pbar, warps::Mapping};
 
 /// Computes normalized and clipped distance transform (bwdist) for rectangle that fills image.
-#[cached(sync_writes = true)]
+#[cached(sync_writes = "by_key")]
 pub fn distance_transform(size: (usize, usize)) -> Array2<f32> {
     let (w, h) = size;
     let corners = [
@@ -69,7 +71,7 @@ pub fn polygon_distance_transform(corners: &Array2<f32>, size: (usize, usize)) -
     let mut weights = -polygon_sdf(&points, corners);
     let max = weights.fold(-f32::INFINITY, |a, b| a.max(*b));
     weights.mapv_inplace(|v| v / max);
-    weights.into_shape((height, width)).unwrap()
+    weights.into_shape_with_order((height, width)).unwrap()
 }
 
 /// Akin to the distance transform used by opencv or bwdist in MATLB but much more general.
@@ -221,4 +223,29 @@ where
         .collect();
     let merged = merge_arrays(mappings, &frames[..], size.map(|(w, h)| (h, w)), message)?;
     Ok(array3_to_image(merged.mapv(<P as Pixel>::Subpixel::clamp)))
+}
+
+/// Merge frames using simple linear blending
+/// If size (height, width) is specified, that will be used as the canvas size,
+/// otherwise, find smallest canvas size that fits all warps.
+#[pyfunction]
+#[pyo3(
+    name = "merge_arrays",
+    text_signature = "(mappings: List[Mapping], frames: List[np.ndarray], size: Optional[Tuple[int, int]]) -> np.ndarray"
+)]
+pub fn merge_arrays_py<'py>(
+    py: Python<'py>,
+    mappings: Vec<Mapping>,
+    frames: &Bound<'py, PyList>,
+    size: Option<(usize, usize)>,
+) -> Result<Bound<'py, PyArray3<f32>>> {
+    let frames: Vec<_> = frames.extract()?;
+    let frames: Vec<Array3<f32>> = frames
+        .iter()
+        .map(pyarray_to_im_bridge::<f32>)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let merged = merge_arrays(&mappings, &frames, size, None)?;
+
+    Ok(merged.to_pyarray(py))
 }
