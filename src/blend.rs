@@ -231,7 +231,7 @@ where
 #[pyfunction]
 #[pyo3(
     name = "merge_arrays",
-    text_signature = "(mappings: List[Mapping], frames: List[np.ndarray], size: Optional[Tuple[int, int]]) -> np.ndarray"
+    signature = (mappings, frames, size=None)
 )]
 pub fn merge_arrays_py<'py>(
     py: Python<'py>,

@@ -183,6 +183,7 @@ pub fn stabilized_video<P, R: AsRef<Path>>(
     fps: Option<u64>,
     step: Option<usize>,
     out_path: Option<R>,
+    process_fn: &Option<impl Fn(Image<P>) -> Image<P> + Sync>,
     message: Option<&str>,
 ) -> Result<()>
 where
@@ -228,13 +229,17 @@ where
         .step_by(step.unwrap_or(100))
         .enumerate()
         .for_each(|(i, (map, frame))| {
-            let img = map.transform(None, Some(offset.clone())).warp_image(
+            let mut img = map.transform(None, Some(offset.clone())).warp_image(
                 frame,
                 (canvas_h.ceil() as usize, canvas_w.ceil() as usize),
                 Some(*P::from_slice(
                     &vec![<P as Pixel>::Subpixel::DEFAULT_MIN_VALUE; P::CHANNEL_COUNT as usize],
                 )),
             );
+
+            if let Some(ref preprocess) = process_fn {
+                img = preprocess(img);
+            }
 
             let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
             img.save(&path)

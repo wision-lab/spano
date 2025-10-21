@@ -26,8 +26,10 @@ use strum_macros::Display;
 
 use crate::lk::{pyarray_cast, pyarray_to_im_bridge};
 
-#[pyclass(eq, eq_int)]
-#[derive(Copy, Clone, Debug, Display, ValueEnum, PartialEq, EnumCount, VariantArray)]
+#[pyclass(eq, eq_int, ord)]
+#[derive(
+    Copy, Clone, Debug, Display, ValueEnum, PartialEq, PartialOrd, EnumCount, VariantArray,
+)]
 pub enum TransformationType {
     Unknown,       // Transformation type unknown
     Identity,      // NoOP transform

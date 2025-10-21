@@ -31,11 +31,11 @@ pub struct Cli {
 
     /// Path of images to register, two are expected when matching images
     #[arg(short, long, num_args(..2), global=true)]
-    pub input: Vec<String>,
+    pub input: Vec<PathBuf>,
 
     /// Path of output
     #[arg(short, long, default_value = "out.png", global = true)]
-    pub output: Option<String>,
+    pub output: Option<PathBuf>,
 
     /// Only use every `viz_step` frame for visualization
     #[arg(long, default_value_t = 10, global = true)]
@@ -47,11 +47,11 @@ pub struct Cli {
 
     /// Path of video output showing optimization process [default: does not save]
     #[arg(short, long, global = true)]
-    pub viz_output: Option<String>,
+    pub viz_output: Option<PathBuf>,
 
     /// Output directory to save individual frames to [default: tmpdir]
     #[arg(short = 'd', long, global = true)]
-    pub img_dir: Option<String>,
+    pub img_dir: Option<PathBuf>,
 
     /// Apply transformations to each frame (these can be composed)
     #[arg(short, long, value_enum, num_args(0..), global=true)]
@@ -59,7 +59,7 @@ pub struct Cli {
 }
 
 #[derive(Args, Debug, Clone)]
-pub struct LKArgs {
+pub struct MatchingArgs {
     /// If enabled, use multi-level / hierarchical matching
     #[arg(long, default_value_t = false)]
     pub multi: bool,
@@ -104,7 +104,7 @@ pub struct LKArgs {
 #[derive(Args, Debug, Clone)]
 pub struct PanoArgs {
     #[command(flatten)]
-    pub lk_args: LKArgs,
+    pub matching_args: MatchingArgs,
 
     /// Index of binary frame at which to start the preview from (inclusive)
     #[arg(short, long, default_value = None)]
@@ -126,6 +126,10 @@ pub struct PanoArgs {
     #[arg(long, action)]
     pub invert_response: bool,
 
+    /// When inverting the SPAD's response, use this factor to modulate the scene response
+    #[arg(long, default_value_t = 1.0)]
+    pub factor: f32,
+
     /// If enabled, apply sRGB tonemapping to output
     #[arg(long, action)]
     pub tonemap2srgb: bool,
@@ -133,6 +137,10 @@ pub struct PanoArgs {
     /// If enabled, swap columns that are out of order and crop to 254x496
     #[arg(long, action)]
     pub colorspad_fix: bool,
+
+    /// If enabled, insert missing row between array halves and crop to 509x496
+    #[arg(long, action)]
+    pub grayspad_fix: bool,
 
     /// Path of color filter array to use for demosaicing
     #[arg(long, default_value = None)]
@@ -145,6 +153,14 @@ pub struct PanoArgs {
     /// If provided, run baseline method and save panorama to this path
     #[arg(long, default_value = None)]
     pub baseline_path: Option<PathBuf>,
+
+    /// If provided, run save naivesum to this path
+    #[arg(long, default_value = None)]
+    pub naivesum_path: Option<PathBuf>,
+
+    /// If enabled, crop output panorama (and baseline) to the same size as input frames
+    #[arg(long, action)]
+    pub crop: bool,
 
     /// Number of consecutive binary frames that will be merged together with identity transform and considered as
     /// new granular unit. This greatly speeds up computations and memory requirements, at the cost of potential motion blur
@@ -164,7 +180,7 @@ pub struct PanoArgs {
 pub enum Commands {
     /// Perform Lucas-Kanade homography estimation between two images and animate optimization process.
     /// This will match the second provided image (template) to the first image (reference).
-    LK(LKArgs),
+    LK(MatchingArgs),
 
     /// Estimate pairwise homographies and compose panorama by interpolating warp to all frames.
     Pano(PanoArgs),

@@ -2329,8 +2329,8 @@ dependencies = [
 
 [[package]]
 name = "photoncube"
-version = "0.3.15"
-source = "git+https://github.com/WISION-Lab/photoncube?tag=v0.3.15#ec2470d3a49b60e063de9cb07529e66f91b12966"
+version = "0.3.16"
+source = "git+https://github.com/WISION-Lab/photoncube?tag=v0.3.16#d0197fa335d8e2845b58e9d0ee33f8ecb825c575"
 dependencies = [
  "ab_glyph",
  "anyhow",
@@ -3099,7 +3099,7 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
 name = "spano"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "anyhow",
  "approx",

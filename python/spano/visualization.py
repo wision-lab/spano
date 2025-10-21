@@ -26,7 +26,8 @@ def plot_params(
         }
         data = sorted(data.items(), reverse=True)
         steps = np.cumsum([0] + [len(v) for _, v in data])
-        data = np.concatenate([v for _, v in data])
+        num_params = max(np.array(v).shape[-1] for _, v in data) 
+        data = np.concatenate([np.pad(v, ((0, 0), (0, num_params-np.array(v).shape[-1]))) for _, v in data])
 
         if normalize:
             data /= np.abs(data).max(axis=0)
